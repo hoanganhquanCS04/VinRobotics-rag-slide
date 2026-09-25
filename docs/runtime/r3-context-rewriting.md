@@ -47,7 +47,7 @@ index). Generation không giải được (không biết hỏi gì). **Phải gi
 
 ### 1.3 Đây là chỗ nối offline–online chặt nhất
 
-> Lý do [S1](../offline/s1-slide-understanding.md) ép `relations` ra **triple** thay vì
+> Lý do S1 ép `relations` ra **triple** thay vì
 > văn xuôi chính là để "cái mũi tên đỏ kia" **bind được vào một record cụ thể**.
 
 ```json
@@ -136,13 +136,13 @@ retrieve của R4). `query_rewritten` là **tham số tool**.
 
 `query_expanded` trông xấu và đó là bình thường — nó là **đầu vào của máy**, không phải
 câu tiếng Việt. Cùng tinh thần với `message` phải tự đứng được ở
-[S1](../offline/s1-slide-understanding.md): artifact nào máy đọc thì viết cho máy.
+S1: artifact nào máy đọc thì viết cho máy.
 
 ---
 
 ## 5. Vòng tròn R3 ↔ R2, và cách gỡ ★
 
-Từ khi [R2](./r2-navigation.md) chuyển sang truy xuất, xuất hiện một vòng tròn:
+Từ khi R2 chuyển sang truy xuất, xuất hiện một vòng tròn:
 
 ```
 muốn TRUY XUẤT   -> cần query đã rewrite

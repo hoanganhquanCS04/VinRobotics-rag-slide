@@ -4,6 +4,12 @@
 **Output:** `KBChunk[]` + `KBIndex`
 **Model:** LLM (enrich + classify) + VLM (caption hình) + embedding
 
+> **v0:** chưa có tài liệu nguồn riêng — **chính file deck PDF đang làm luôn KB**.
+> Nghĩa là ca mô tả ở [§8](#8-nếu-không-có-tài-liệu-nguồn) dưới đây **đang là hiện
+> thực**, không phải tình huống giả định: hệ thống co lại thành "robot mô tả slide".
+> Input của S5 ở v0 là `ParsedDocument` ([spec](../spec/parsed-document.md)), không
+> phải `source/*.pdf` riêng.
+
 ---
 
 ## 1. Vị trí trong pipeline
@@ -151,8 +157,8 @@ Phân loại bằng LLM **cùng lượt với bước enrich**, đừng gọi ri
 
 | Hạng mục | Chọn | Lý do |
 |---|---|---|
-| Model | **`bge-m3`** | Đa ngữ, tiếng Việt tốt, cho cả dense + sparse trong một lần forward |
-| Dense | vector 1024 chiều | Ngữ nghĩa |
+| Model | **v0: `text-embedding-3-small` qua API** | Không tốn đĩa, không phải nạp model. Đích vẫn là `bge-m3` (đa ngữ, dense + sparse 1 forward) |
+| Dense | vector 1536 chiều | Ngữ nghĩa. `bge-m3` thì 1024 |
 | Sparse | BM25 hoặc SPLADE | **Bắt buộc có.** Thuật ngữ kỹ thuật, tên riêng, viết tắt — dense hay trượt |
 | Vector DB | Qdrant / Milvus | Cần hỗ trợ **metadata filter** tốt |
 | Embed cái gì | **`text_enriched`** | Không phải `text_raw` |
@@ -190,7 +196,7 @@ Metadata phải index được để filter: `source_doc`, `content_type`, `deck
 }
 ```
 
-**Ba trường cuối đang rỗng. Toàn bộ nhiệm vụ của [S3](./s3-alignment.md) là đi điền chúng.**
+**Ba trường cuối đang rỗng. Toàn bộ nhiệm vụ của S3 là đi điền chúng.**
 
 ---
 

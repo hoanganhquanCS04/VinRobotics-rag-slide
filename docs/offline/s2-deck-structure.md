@@ -1,5 +1,11 @@
 # S2 — Deck Structure
 
+> ⚠️ **BẢN CŨ — đã co lại nhiều.** `sections` giờ dựng bằng **luật** từ `page_header`
+> ngay ở S0 (7 section, confidence 0.95), không cần LLM. `concept_map`, `dependencies`,
+> `arc` đã **BỎ** — chúng sinh ra để bơm ngữ cảnh toàn cục vào prompt, mà thiết kế hiện
+> tại không nhồi. S2 nay chỉ còn **`time_budget`**: chia theo số trang `content` mỗi
+> section. Phần dưới giữ lại cho v1. Xem [CLAUDE.md §5](../../CLAUDE.md).
+
 **Input:** 20 dòng nén từ `SlideRepr[]` + `section_native` (nếu có) + `time_budget_min`
 **Output:** `DeckStructure`
 **Model:** 1× LLM, gọi toàn cục
@@ -100,10 +106,10 @@ trang 12 đang dựa vào khái niệm của trang 5.** Đó là thứ S2 sinh r
 ]
 ```
 
-**Dùng làm gì:** `summary` được [S6a](./s6-precompute.md) embed thành **`v_section`**.
+**Dùng làm gì:** `summary` được S6a embed thành **`v_section`**.
 Khán giả nói *"quay lại chỗ nói về ba khối"* → truy xuất khớp `v_section` của `sec3`
 → nhảy trang 7. Đây là đường điều hướng **mức section** của
-[R2](../runtime/r2-navigation.md), tách riêng khỏi đường mức trang.
+R2, tách riêng khỏi đường mức trang.
 
 Vì bị embed nên `summary` phải **tự đứng được** — xem §5.2.
 
@@ -124,7 +130,7 @@ Vì bị embed nên `summary` phải **tự đứng được** — xem §5.2.
 }
 ```
 
-**`gloss` là trường mới, và nó tồn tại vì một lý do runtime cụ thể:** [S6a](./s6-precompute.md)
+**`gloss` là trường mới, và nó tồn tại vì một lý do runtime cụ thể:** S6a
 **embed nó thành `v_concept`**, thay cho việc dump cả bảng `concept_map` vào prompt runtime.
 
 ```
@@ -133,7 +139,7 @@ MỚI: index từng khái niệm -> R4 truy xuất đúng 1–3 khái niệm li�
 ```
 
 Nên `gloss` phải **tự đứng được**, đúng luật của
-[`message` ở S1 §3.1](./s1-slide-understanding.md): gọi tên khái niệm ra, không đại từ,
+`message` ở S1 §3.1: gọi tên khái niệm ra, không đại từ,
 không "như đã nói ở trên". Một câu, 20–40 từ.
 
 `sections[].summary` cũng bị embed thành `v_section` → **cùng luật**.
@@ -232,7 +238,7 @@ LLM sẽ vi phạm mấy cái này. Check bằng code, **không tin nó**.
 4. `dependencies` không có chu trình (DAG)
 5. `concept_map`: `introduced_at ≤ min(used_at)`
 6. **`gloss` và `summary` qua check tự đứng được** — danh sách từ cấm, và phải gọi tên
-   chính khái niệm / chủ đề đó ra (cùng bộ kiểm với [S1 §3.1](./s1-slide-understanding.md))
+   chính khái niệm / chủ đề đó ra (cùng bộ kiểm với S1 §3.1)
 
 **Vi phạm luật 3 hoặc 5 thường không phải lỗi của LLM mà là lỗi thật của bộ slide** —
 tác giả xếp nhầm thứ tự. **Đừng tự sửa**, báo lên S7 cho người quyết.

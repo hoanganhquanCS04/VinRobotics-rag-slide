@@ -104,7 +104,7 @@ vòng thuyết trình:
 - Sau mỗi trang → chờ quá lâu, có trang dài 90 giây
 
 Đây là điểm dừng sạch duy nhất, và là lý do [S4](../offline/s4-scenario.md) chia kịch bản
-tới mức câu và [S6](../offline/s6-precompute.md) cache TTS theo câu.
+tới mức câu và S6 cache TTS theo câu.
 
 Ở cuối `build_step` và cuối trang có thêm hai điểm kiểm tra "mạnh hơn" — đây là chỗ câu
 hỏi nội dung đang chờ được lấy ra.

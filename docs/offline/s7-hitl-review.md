@@ -123,7 +123,7 @@ duyệt học cách bỏ qua flag, và **cả cơ chế flag mất giá trị** 
 `flag precision` ở mục 1 tồn tại để chống.
 
 Khi chấp nhận một cặp, runtime vẫn có lối thoát: confidence gate của
-[R2](../runtime/r2-navigation.md) sẽ thấy margin nhỏ ở đúng cặp đó và **hỏi lại kèm
+R2 sẽ thấy margin nhỏ ở đúng cặp đó và **hỏi lại kèm
 thumbnail** thay vì nhảy bừa. Chấp nhận cặp không có nghĩa là chấp nhận nhảy sai.
 
 ---
@@ -159,7 +159,7 @@ thay được nó.
 
 ### Nghe cái gì
 
-[S6b](./s6-precompute.md) xuất sẵn `precomputed/listen_sample/`:
+S6b xuất sẵn `precomputed/listen_sample/`:
 
 ```
 slide_03.mp3  slide_12.mp3  slide_18.mp3   <- 3 trang đại diện: đầu / giữa / cuối deck

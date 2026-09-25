@@ -85,7 +85,7 @@ R2/R3/R4 tách nhau ở **tài liệu và đánh giá**, không tách ở **th�
 |              | Lớp                    | Một câu                                                                                      | File                              |
 | ------------ | ----------------------- | ---------------------------------------------------------------------------------------------- | --------------------------------- |
 | **R1** | Intake & fast-path      | Nhận vào hàng đợi, khử trùng · regex điều hướng ~5ms                               | [r1](./r1-intake-fastpath.md)      |
-| **R2** | Slide navigation        | retrieve → rerank → LLM chọn top-3 +**confidence gate**                               | [r2](./r2-navigation.md)           |
+| **R2** | Slide navigation        | retrieve → rerank → LLM chọn top-3 +**confidence gate**                               | r2           |
 | **R3** | Context-aware rewriting | Giải tiền ngữ bám**trạng thái phi ngôn ngữ** · R3a mở rộng query, R3b rewrite | [r3](./r3-context-rewriting.md)    |
 | **R4** | Grounded answering      | 3 phạm vi · trích dẫn trang · biết nói không biết                                     | [r4](./r4-grounded-answering.md)   |
 | **R5** | Streaming speech        | Cắt câu từ token stream → TTS từng câu                                                   | [r5](./r5-streaming-speech.md)     |
@@ -383,7 +383,7 @@ Hai khối bị bỏ và lý do:
 
 | Bỏ                      | Cũ                     | Giờ ở đâu                                                               |
 | ------------------------ | ----------------------- | --------------------------------------------------------------------------- |
-| `slide_index` cả deck | ~1.4k token mỗi lượt | `slide_index` Qdrant, [R2](./r2-navigation.md) truy xuất top-5            |
+| `slide_index` cả deck | ~1.4k token mỗi lượt | `slide_index` Qdrant, R2 truy xuất top-5            |
 | `concept_map` cả deck | ~600 token mỗi lượt  | `v_concept` trong cùng index, [R4](./r4-grounded-answering.md) truy xuất |
 
 ### Tool schema — đây chính là bảng phân loại intent
@@ -454,7 +454,7 @@ Cộng với vòng thuyết trình latency 0, **~90% thời lượng buổi nói
 
 | # | Quyết định                                                                                                                                                                                                                                   | Ở đâu                              |
 | - | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
-| 1 | **Confidence gate** lấy score từ **reranker** (`bge-reranker-v2-m3`) — số thật, calibrate được, không dùng điểm LLM tự khai. Ngưỡng **fit trên bộ 50 câu có nhãn**, sau khi `recall@5` đã đạt 95% | [R2 §4–5](./r2-navigation.md)        |
+| 1 | **Confidence gate** lấy score từ **reranker** (`bge-reranker-v2-m3`) — số thật, calibrate được, không dùng điểm LLM tự khai. Ngưỡng **fit trên bộ 50 câu có nhãn**, sau khi `recall@5` đã đạt 95% | R2 §4–5        |
 | 2 | **QA_CURRENT trả lời thẳng trong lần gọi routing**, không gọi tool rồi gọi lại. Bắt buộc kèm `grounding` trỏ vào `slide_repr`                                                                                          | [R4 §3](./r4-grounded-answering.md)   |
 | 3 | **Ma trận ngắt:** điều hướng ngắt ngay ở ranh giới câu · hỏi nội dung đợi hết trang (trừ khi hàng đợi > 3) · meta áp dụng ngay không ngắt lời                                                                   | [R7 §3](./r7-interrupt-turntaking.md) |
 
@@ -473,7 +473,7 @@ Cộng với vòng thuyết trình latency 0, **~90% thời lượng buổi nói
 | R7 | thời gian chờ câu hỏi · số lần ngắt / buổi                    | báo cáo                                    |
 
 Hai chỉ số in đậm đáng chú ý vì chúng **không phải chỉ số hiển nhiên**:
-`harmful jump rate` quan trọng hơn Top-1 accuracy ([R2](./r2-navigation.md)), và
+`harmful jump rate` quan trọng hơn Top-1 accuracy (R2), và
 `underrun` quan trọng hơn TTFB ([R5](./r5-streaming-speech.md)).
 
 ---

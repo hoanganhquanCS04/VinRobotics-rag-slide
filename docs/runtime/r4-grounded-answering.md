@@ -38,7 +38,7 @@ cho 60% câu hỏi không cần**.
 prompt (~600 token mỗi lượt). Mỗi khái niệm giờ là một document trong `slide_index` với
 `v_concept` embed từ `gloss` ([S2](../offline/s2-deck-structure.md)).
 
-Nó **không tốn thêm latency** vì chạy chung lần truy xuất với [R2](./r2-navigation.md):
+Nó **không tốn thêm latency** vì chạy chung lần truy xuất với R2:
 slide, section và concept nằm chung index, khác `content_type`. Một lần gọi Qdrant, lọc
 kết quả theo loại.
 

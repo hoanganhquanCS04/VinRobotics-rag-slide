@@ -1,5 +1,14 @@
 # S4 — Scenario
 
+> ⚠️ **Đọc trước: input đã đổi.** S4 nhận **`KBChunk` của CHÍNH TRANG ĐÓ** + `title`
+> trang trước/sau + `slide_type` + `time_budget`. **Không** còn `SlideRepr`, `message`,
+> `concept_map`, `AlignmentMap` — S1 và S3 đã bỏ. Mọi chỗ dưới nhắc tới chúng thì thay
+> bằng nội dung trang. Luật về `content` / `delivery`, 7 đòn bẩy tự nhiên, đếm âm tiết,
+> pass 2 cân giờ **vẫn nguyên giá trị**. Xem [CLAUDE.md §5](../../CLAUDE.md).
+>
+> Kịch bản lưu ở `out/deck/<doc_id>/scenario.json` — **không** để chung với
+> `ParsedDocument` (parse lại là mất) hay `KBChunk` (sửa lời thoại không được làm bẩn index).
+
 **Input:** `SlideRepr[]` + `DeckStructure` + `AlignmentMap[]` + `KBChunk[]` + `pronunciation.json` (+ `speaker_notes`)
 **Output:** `Scenario[]`
 **Model:** LLM, 2 pass (pass 1 viết, pass 2 cân thời lượng)
@@ -126,7 +135,7 @@ người nghe thấy.
 "prosody": {"emphasis": ["tách hẳn"], "pause_before_ms": 250, "speed": 1.0}
 ```
 
-S4 sinh, [S6b](./s6-precompute.md) áp vào TTS. Không có nó thì mọi câu cùng một đường
+S4 sinh, S6b áp vào TTS. Không có nó thì mọi câu cùng một đường
 ngữ điệu phẳng.
 
 ### ④ Từ diễn ngôn đặt ĐÚNG ranh giới cấu trúc
@@ -168,7 +177,7 @@ CẤM:   "Cột một là phương pháp, cột hai là chi phí, cột ba là �
 
 ### ⑦ Từ điển phát âm
 
-`pronunciation.json` (shared layer, [S1 §3.2](./s1-slide-understanding.md) bổ sung).
+`pronunciation.json` (shared layer, S1 §3.2 bổ sung).
 
 Hai lý do nó không phải chi tiết vặt của TTS:
 

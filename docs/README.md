@@ -1,34 +1,64 @@
 # Tài liệu hệ thống
 
+> **HIỆN TRẠNG v0 — đọc trước.** Bài toán: robot thuyết trình và trả lời câu hỏi từ
+> **một file PDF duy nhất**, file đó vừa là deck vừa là KB. Lưu file JSON trên đĩa,
+> chưa có vector DB, **không chạy model local nào** (VLM và embedding đều qua API).
+>
+> So với bản thiết kế cũ: **S1 đã bỏ** (gộp vào S0), **S3 đã bỏ** (align vào chính mình),
+> **multi-field embed đã bỏ**. Lý do ở [CLAUDE.md §5](../CLAUDE.md).
+> `runtime/` vẫn là thiết kế đích, chưa có dòng code nào.
+
 | Nhóm | Nội dung |
 |---|---|
-| [`offline/`](./offline/) | Đặc tả nhánh offline S0–S7: input, output, luật, failure mode, quality gate |
-| [`runtime/`](./runtime/) | Đặc tả nhánh runtime R1–R7: vì sao có lớp, cơ chế, failure mode, chỉ số |
+| [`spec/`](./spec/) | **Cái đã code thật.** Schema dữ liệu đang chạy |
+| [`offline/`](./offline/) | *(thiết kế đích)* Đặc tả nhánh offline S0–S7 |
+| [`runtime/`](./runtime/) | *(thiết kế đích)* Đặc tả nhánh runtime R1–R7 |
 | `eval/` | *(chưa viết)* bộ test có nhãn, ablation, báo cáo |
+
+## Đã code đến đâu
+
+```
+✅ PDF → ParsedDocument     src/parsing/     40 trang · 7 section · patch tay
+✅ ParsedDocument → chunk   src/kb/chunk.py  52 chunk
+✅ chunk → vector qua API   src/kb/embed.py  1536 chiều · cache sha1
+✅ tìm hybrid + đo          src/kb/{search,audit,eval}.py
+🚫 S1, S3                   BỎ — xem bảng dưới
+⬜ S2 S4 S6b S7             chưa có dòng nào
+⬜ Runtime R1–R7            chưa có dòng nào
+```
+
+| Spec | Nội dung |
+|---|---|
+| [parsed-document.md](./spec/parsed-document.md) | Cấu trúc sau khi parse PDF — trang, mẩu, chương, cờ |
+| [kb-chunk.md](./spec/kb-chunk.md) | Cắt tài liệu thành mẩu để tìm |
+| [embedding.md](./spec/embedding.md) | Biến chunk thành vector — model, cách gộp, cache |
+| [search.md](./spec/search.md) | Từ câu hỏi ra số trang — hybrid dense + BM25, gộp bằng RRF |
+| [pronunciation.md](./spec/pronunciation.md) | Robot đọc thuật ngữ thế nào — và S4 đếm âm tiết theo đó |
 
 ## Nhánh offline
 
 Đọc [`offline/00-overview.md`](./offline/00-overview.md) trước, rồi theo **thứ tự chạy thật**
 (số stage là lớp khái niệm, không phải thứ tự thực thi):
 
-| Đọc theo thứ tự | File | Một câu |
+| Trạng thái | File | Một câu |
 |---|---|---|
-| — | [00-overview](./offline/00-overview.md) | **Bốn** nguyên tắc, hai nhánh, hai index, sơ đồ khối từng stage, incremental |
-| 1 | [S0 Ingest](./offline/s0-ingest.md) | Parse pptx + render PNG. Thuần parsing, không model |
-| 2 | [S1 Slide Understanding](./offline/s1-slide-understanding.md) | VLM sinh **ý nghĩa** · `message` phải **tự đứng được** |
-| 3 | [S2 Deck Structure](./offline/s2-deck-structure.md) | Nhìn toàn cục, **không viết câu nào** · `concept_map[].gloss` |
-| ∥ | [S5 KB Construction](./offline/s5-kb-construction.md) | Chunk + contextual enrichment + hybrid index. Chạy song song từ t=0 |
-| 4 | [S3 Alignment](./offline/s3-alignment.md) | Tìm chunk **là nguồn gốc** của slide, không phải chunk giống slide |
-| ∥ | [S6a Build SlideIndex](./offline/s6-precompute.md) | Multi-field embed + **self-retrieval check**. Song song với S3 |
-| 5 | [S4 Scenario](./offline/s4-scenario.md) | Kịch bản nói · `content` vs `delivery` · 7 đòn bẩy tự nhiên |
-| 6 | [S6b Precompute](./offline/s6-precompute.md) | TTS theo câu, một giọng duy nhất, qa_cache, bản nghe thử |
-| 7 | [S7 HITL Review](./offline/s7-hitl-review.md) | Duyệt **chỉ phần bị flag** · vòng ĐỌC + vòng **NGHE** (MOS) |
+| — | [00-overview](./offline/00-overview.md) | Bốn nguyên tắc · kiến trúc v0 **một file một index** · sơ đồ từng stage · incremental |
+| ✅ | [S0 Ingest](./offline/s0-ingest.md) | PDF qua docling + VLM mô tả ảnh qua API · `sections` và `slide_type` bằng **luật** |
+| ✅ | [S5 KB Construction](./offline/s5-kb-construction.md) | Chunk theo trang + embed qua API + hybrid dense/BM25 |
+| ⬜ | [S2 Deck Structure](./offline/s2-deck-structure.md) | Chỉ còn `time_budget` — `sections` đã có từ S0 |
+| ⬜ | [S4 Scenario](./offline/s4-scenario.md) | Kịch bản nói · `content` vs `delivery` · 7 đòn bẩy tự nhiên |
+| ⬜ | S6b Precompute | TTS theo câu, một giọng duy nhất, qa_cache, bản nghe thử |
+| ⬜ | [S7 HITL Review](./offline/s7-hitl-review.md) | Duyệt **chỉ phần bị flag** · vòng ĐỌC + vòng **NGHE** (MOS) |
+| 🚫 | ~~S1 Slide Understanding~~ | **BỎ** — gộp vào S0. `message`/`relations` sinh ra để nhồi prompt, không dùng |
+| 🚫 | ~~S3 Alignment~~ | **BỎ ở v0** — KB đến từ chính file slide, align vào chính mình thì vô nghĩa |
 
-Hai thay đổi lớn đã áp vào toàn bộ bộ docs:
+Ba thay đổi lớn đã áp vào toàn bộ bộ docs:
 
 - **NT4 — tự nhiên là yêu cầu.** Gỡ va chạm với NT3 bằng cách tách câu `content` / `delivery`
-- **Bỏ nhồi context, làm RAG truy xuất chuẩn.** `slide_index` thành index thật ở S6a;
-  prompt runtime co từ ~3.6k xuống ~1.3k token
+- **Bỏ nhồi context, làm RAG truy xuất chuẩn.** Prompt runtime ~1.3k token, không phải 3.6k.
+  S4 viết kịch bản trang nào thì đọc trang đó, không nhồi cả deck.
+- **Bỏ tầng "hiểu slide" riêng (S1).** Mô tả ảnh do VLM sinh ngay ở S0; `slide_type` và
+  `sections` làm bằng **luật**, đo được 40/40 đúng, không tốn một lần gọi model nào.
 
 ## Nhánh runtime
 
@@ -40,7 +70,7 @@ từng file riêng sẽ hiểu sai thành pipeline tuần tự.
 |---|---|---|
 | — | [00-overview](./runtime/00-overview.md) | Hai vòng lặp, một lần gọi LLM, state, ngân sách, 3 quyết định đã chốt |
 | **R1** | [Intake & fast-path](./runtime/r1-intake-fastpath.md) | Hàng đợi + khử trùng · regex điều hướng ~5ms |
-| **R2** | [Slide navigation](./runtime/r2-navigation.md) | LLM chọn trang toàn cục + **confidence gate** |
+| **R2** | Slide navigation | LLM chọn trang toàn cục + **confidence gate** |
 | **R3** | [Context-aware rewriting](./runtime/r3-context-rewriting.md) | Giải tiền ngữ bám **trạng thái phi ngôn ngữ** |
 | **R4** | [Grounded answering](./runtime/r4-grounded-answering.md) | 3 phạm vi · trích dẫn trang · biết nói không biết |
 | **R5** | [Streaming speech](./runtime/r5-streaming-speech.md) | Cắt câu từ token stream → TTS từng câu |

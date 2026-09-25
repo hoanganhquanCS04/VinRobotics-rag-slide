@@ -48,23 +48,64 @@ và có nguồn truy nguyên được.
 
 ---
 
-## 3. Kiến trúc: hai nhánh, hội tụ tại S3
+## 3. Kiến trúc
+
+### 3.0 HIỆN TRẠNG v0 — đọc trước khi dùng phần còn lại ★
+
+Thiết kế gốc giả định **hai nguồn tách biệt**: deck `.pptx` để trình chiếu, và
+`source/*.pdf` làm tài liệu nền. Thực tế đang làm **KHÔNG như vậy**:
+
+```
+MỘT FILE PDF DUY NHẤT  →  vừa là DECK vừa là KB
+```
+
+Ba hệ quả bắt buộc phải chấp nhận, không được lờ đi:
+
+1. **Mất bản đúng 100% của `chart_data`, `tables`, `build_steps`.** Chúng đến từ XML
+   của pptx; PDF không có. NT2 vẫn giữ nguyên nhưng phạm vi co lại: chỉ còn **text
+   layer của PDF** là `deterministic`, mọi thứ khác là `vlm`.
+2. **S3 Alignment suy biến.** Align slide với nguồn mà nguồn chính là slide → mỗi
+   slide map vào chính nó, không sinh thêm tri thức nào. Chưa có tài liệu nguồn
+   riêng thì **S3 chạy cũng vô nghĩa**.
+3. **Hệ thống co lại thành "robot mô tả slide"** đúng như
+   [s5 §8](docs/offline/s5-kb-construction.md) đã cảnh báo. Độ sâu trả lời giới hạn
+   ở mức mô tả, ngưỡng từ chối phải nâng cao. **Tuyệt đối không để LLM tự phình
+   kiến thức từ slide ra để bù** — đó là nướng ảo giác vào hệ thống vĩnh viễn.
+
+Muốn thoát khỏi giới hạn này chỉ có một cách: **đưa vào tài liệu nguồn thật**
+(giáo trình, paper, tài liệu kỹ thuật) tách khỏi deck. Không có thì chấp nhận
+mức "mô tả slide".
+
+**Đã làm được đến đâu:**
+
+```
+✅ S0   PDF → ParsedDocument      src/parsing/     40 trang, 7 section, patch tay
+✅ S5   chunk + vector + tìm      src/kb/          52 chunk, hybrid dense+BM25
+🚫 S1   BỎ — gộp vào S0                            xem §5
+🚫 S3   BỎ ở v0 — align vào chính mình thì vô nghĩa
+⬜ S2   slide_type + time_budget  luật, chưa code
+⬜ S4   kịch bản                  chưa có dòng nào
+⬜ S6b  TTS + pronunciation.json  chưa có dòng nào
+⬜ S7   người duyệt phần bị flag  chưa có dòng nào
+```
+
+### 3.1 Sơ đồ đích (khi đã có tài liệu nguồn riêng)
 
 ```
 NHÁNH DECK                          NHÁNH NGUỒN
-deck.pptx                           source/*.pdf
+deck.pdf  ← v0: CÙNG MỘT FILE →     source/*.pdf
   S0 Ingest                           S5 KB Construction
   S1 Slide Understanding              (chunk, enrich, index)
   S2 Deck Structure                         │
      ├──────────────┐                       ▼
-     │              │                 [kb_chunks] Qdrant · SHARED
+     │              │                 [kb_chunks] SHARED
      ▼              ▼                       │
  S6a BUILD      S3 Alignment ◄──────────────┘
- SLIDEINDEX         │
+ SLIDEINDEX         │                  ← v0: suy biến, bỏ qua
      │              ▼
 [slide_index_   S4 Scenario
   {deck}]           │
-  Qdrant            ▼
+     │              ▼
      │          S6b TTS + qa_cache
      └──────┬───────┘
             ▼
@@ -76,17 +117,15 @@ deck.pptx                           source/*.pdf
 **Thứ tự chạy thật** (số stage là lớp khái niệm, KHÔNG phải thứ tự):
 
 ```
-S5 ∥ S0 → S1 → S2 ─┬─► S6a → self-retrieval check ──┐
-                   └─► S3 → S4 → S6b ───────────────┴─► S7
+S0 → S5 (chunk+embed) ─┬─► S6a deck_map + audit ──┐
+    → S2 (luật)        └─► S4 kịch bản → S6b TTS ──┴─► S7
 ```
 
-- S5 không phụ thuộc deck → chạy song song từ t=0; deck thứ 2 dùng chung nguồn thì skip
-- S3 là điểm hội tụ duy nhất
-- S2 KHÔNG đi qua S3, nhảy thẳng xuống S4
-- **S6 tách đôi**: S6a chỉ cần S1+S2 → chạy **song song với S3** (không tốn thêm giờ);
-  S6b cần S4
-- **Offline sinh HAI index**: `kb_chunks` (shared) và `slide_index_{deck}` (per-deck).
-  Cùng `bge-m3`, cùng Qdrant, cùng reranker — một hạ tầng, hai index.
+- **S0 làm hết phần hiểu trang**: mô tả ảnh (VLM), `sections` (từ `page_header`),
+  `slide_type` (luật). Không còn stage S1 riêng.
+- **S2 không gọi model**: `sections` đã có từ S0, `time_budget` chia theo số trang.
+- **S4 đọc từng trang một** — không nhồi cả deck vào prompt.
+- **MỘT index duy nhất** ở v0: KB và slide index là một, vì KB đến từ chính file slide.
 
 ---
 
@@ -94,115 +133,150 @@ S5 ∥ S0 → S1 → S2 ─┬─► S6a → self-retrieval check ──┐
 
 | Stage                  | Input                                          | Output                                                                    | Model                      |
 | ---------------------- | ---------------------------------------------- | ------------------------------------------------------------------------- | -------------------------- |
-| S0 Ingest              | `deck.pptx`                                  | `RawSlide[]`                                                            | không có, thuần parsing |
-| S1 Slide Understanding | `RawSlide[i]` + title deck + title trang kề | `SlideRepr[i]`                                                          | VLM, 2 pass                |
-| S2 Deck Structure      | 20 dòng tóm tắt từ S1                      | `sections`, `concept_map`, `dependencies`, `arc`, `time_budget` | 1× LLM toàn cục         |
+| S0 Ingest              | `deck.pdf` (v0; đích: `.pptx`)            | `ParsedDocument` (đích:`RawSlide[]`)                                  | docling + VLM qua API      |
+| ~~S1 Slide Understanding~~ | — | **BỎ** — gộp vào S0 (xem §5) | — |
+| S2 Deck Structure      | `ParsedDocument`                           | `sections` (đã có từ S0) + `time_budget`                                | — (luật, không gọi model) |
 | S5 KB Construction     | `source/*.pdf`                               | `KBChunks[]` + `KBIndex`                                              | LLM + VLM + embedding      |
-| S3 Alignment           | `SlideRepr[]` + `KBIndex`                  | `AlignmentMap` + backfill chunk                                         | retrieval + LLM verify     |
+| ~~S3 Alignment~~       | —                                          | **BỎ ở v0** — §3.0: nguồn chính là deck, align vào chính nó thì vô nghĩa | — |
 | S4 Scenario            | tất cả trên                                 | `Scenario[]`                                                            | LLM, 2 pass                |
-| S6a Build SlideIndex   | `SlideRepr[]` + `DeckStructure`             | `slide_index_{deck}` + `deck_map.txt` + self-retrieval audit        | embedding                  |
-| S6b Precompute         | `Scenario[]` + `pronunciation.json`         | `precomputed/`                                                          | TTS + embedding            |
-| S7 HITL                | mọi artifact + flags                          | `DeckBundle` verified                                                   | — (người, đọc + nghe)   |
+| S6a Build SlideIndex   | `KBChunk[]` (dùng lại index của S5)        | `deck_map.txt` + audit                                                  | embedding qua API          |
+| S6b Precompute         | `Scenario[]` + `pronunciation.json`        | `precomputed/`                                                          | TTS + embedding            |
+| S7 HITL                | mọi artifact + flags                          | `DeckBundle` verified                                                   | — (người, đọc + nghe) |
 
 ---
 
 ## 5. Luật riêng từng stage (agent hay làm sai chỗ này)
 
-### S0
+### S0 — v0: PDF qua docling (`src/parsing/`)
 
-- Sort lại **reading order theo bbox**, KHÔNG dùng thứ tự shape trong XML
+Xem [docs/spec/parsed-document.md](docs/spec/parsed-document.md) cho schema đầy đủ.
+
+- Thứ tự đọc đi theo `body.children` của docling, **KHÔNG** đọc tuần tự mảng `texts[]`
+- Chuẩn hoá bbox: gốc DƯỚI-TRÁI của docling → **TRÊN-TRÁI**, `[0,1]`
+- **GIỮ `furniture`** (header/footer), tách rổ riêng. Thanh header chạy là nguồn
+  duy nhất dựng được section — docling cho `level=1` trên mọi tiêu đề
+- Mô tả ảnh gọi VLM **qua API**, mỗi ảnh một request, prompt ở `prompts/*.md`
+- Ghi `skip_reason` khi không gọi API — phân biệt *chưa gọi* với *gọi mà fail*
+- Tắt OCR: PDF export từ PowerPoint đã có text layer. Đo được: bật OCR chậm 8.4×,
+  markdown **giống hệt**
+- `page_hash` = SHA(nội dung + bbox từng mẩu), cho incremental build
+
+**Mấy luật dưới đây chỉ áp dụng khi quay lại `.pptx`** (đích, chưa làm):
+
 - Lọc hidden slide (`show="0"`) — không lọc là lệch số trang
 - Chart data lấy từ **XML**, cấm để VLM đọc từ pixel
-- Cắt ảnh từ **PNG render theo bbox**, không lấy file trong `ppt/media/` (ảnh đó chưa crop)
+- Cắt ảnh từ **PNG render theo bbox**, không lấy file trong `ppt/media/`
 - Duyệt group **đệ quy**, giữ `group_path`
 - Hash = SHA(XML shape tree normalized + bytes ảnh), KHÔNG hash cả file pptx
 - Chuẩn hoá bbox EMU → `[0,1]`
 
-### S1
+### S1 — BỎ, gộp vào S0 ★
 
-- S1 **không đọc lại slide**, S0 đã đọc rồi. S1 chỉ sinh **ý nghĩa**.
-- Passthrough từ S0, cấm VLM đụng: `title`, `chart_data`, `tables`, `build_steps`
-- Bắt buộc bơm ngữ cảnh deck: tiêu đề deck + title trang trước/sau (CHỈ title)
-- `message` (trang *muốn nói gì*) ≠ `description` (trang *vẽ gì*) — cả hai đều bắt buộc
-- `relations` dạng triple, không phải văn xuôi
-- `visual_elements[].role` phải phân loại `primary`/`supporting`/`decorative`
-- 2 pass chỉ so 3 thứ: `message` (cosine<0.85), `entities` (Jaccard<0.6), `relations` (khác tập)
-- **`message` PHẢI TỰ ĐỨNG ĐƯỢC** — nó bị S6a đem đi embed MỘT MÌNH, lúc đó không có
-  trang kề nào bên cạnh để trỏ vào:
-  - cấm đại từ trỏ ra ngoài trang (`nó`, `cái này`, `cách làm này`)
-  - cấm từ chỉ vị trí (`như trên`, `vừa nêu`, `ở phần trước`, `tiếp theo`)
-  - chủ thể phải được **gọi bằng TÊN** ít nhất một lần
-  - **Vẫn bơm ngữ cảnh deck vào prompt** — dùng để VLM HIỂU, cấm rò rỉ vào CHỮ
-  - `description` và `sections[].summary` cùng luật (đều bị embed)
-- Sinh/bổ sung `pronunciation.json` từ `entities` mới (S4 cần để đếm âm tiết)
+Bản cũ đặt S1 là một vòng gọi LLM riêng mỗi trang, sinh `message` (trang *muốn nói gì*),
+`relations`, `visual_elements[].role`. **Bỏ hết.** Lý do: hai thứ đã có sẵn, hai thứ làm
+được bằng luật, một thứ sinh ra chỉ để nhồi ngữ cảnh toàn cục vào prompt — mà thiết kế
+này không nhồi.
 
-### S2
+| S1 cũ định sinh | nay lấy ở đâu |
+| --------------- | ------------- |
+| `description`   | VLM mô tả ảnh ngay ở **S0** — đã có, đo được là dùng tốt |
+| `slide_type`    | **LUẬT** trên `ParsedDocument`, không gọi model — `section_divider` ĐÃ CÓ ở `src/kb/chunk.py` |
+| `entities`      | trích ở S0 (thuật ngữ, tên hàm, tên riêng) |
+| `message`       | **BỎ** |
+| `relations`     | **BỎ** — "sơ đồ bên trái" giải bằng `bbox`, không cần model |
 
-- Input phải **nén**: chỉ `slide_id`, `title`, `slide_type`, `message`, `entities` (~1.5k token)
-- S2 **KHÔNG viết câu tiếng Việt nào** — chỉ sinh cấu trúc. S4 mới viết văn.
-- Validate bằng code, không tin LLM:
-  1. `sections` phủ kín + không chồng
-  2. `sections` liên tục
-  3. `dependencies` phải lùi (`requires < slide`)
-  4. DAG, không chu trình
-  5. `introduced_at ≤ min(used_at)`
-- Vi phạm luật 3/5 thường là lỗi thật của bộ slide → báo S7, KHÔNG tự sửa
-- `concept_map[].gloss` — **một câu tự đứng được** cho mỗi khái niệm. S6a embed nó
-  thành `v_concept`, thay cho việc dump cả bảng vào prompt runtime.
-- `sections[].summary` cũng bị embed → cùng luật tự đứng được như `message`
+**Luật `slide_type`** — đo trên `3_datavisualization`, **40/40 đúng**, không tốn API:
 
-### S5
+```
+title            trang số 1                                           ⬜ chưa code
+agenda           có mẩu chữ mở đầu bằng "1 " và >= 3 dòng             ⬜ chưa code
+section_divider  đúng 1 tiêu đề, tâm giữa trang                       ✅ ĐÃ CÓ
+                 (cy >= 0.30, cx trong [0.35, 0.65])                     src/kb/chunk.py
+exercise         title LỆCH header chạy + "bài tập|yêu cầu|deadline"   ⬜ chưa code
+content          còn lại                                              ✅ ĐÃ CÓ
+```
 
-- Chunking **structure-aware** theo cây heading, 300–500 token, overlap 50
-- KHÔNG fixed-size, không cắt giữa câu/bảng/công thức
-- **Contextual enrichment là bước quan trọng nhất**: prepend câu bối cảnh vào mỗi chunk
-  TRƯỚC khi embed. Embed `text_enriched`, không phải `text_raw`.
-- Bảng lớn: mỗi hàng 1 chunk, **lặp header ở mỗi hàng**
-- Hybrid bắt buộc: dense (`bge-m3`) + BM25. Tiếng Việt lẫn thuật ngữ Anh.
-- Lọc rác: header/footer lặp, số trang, mục lục, references
+**`section_divider` đã chạy rồi**, nằm ở `KBChunk.content_type` (7/7 đúng). S4 đọc thẳng
+field đó là đủ để KHÔNG bịa ở trang ngăn chương — **không chờ gì cả**.
 
-### S3
+Hai việc còn lại, đều là dọn dẹp, KHÔNG chặn S4:
 
-- **S3 tìm chunk là NGUỒN GỐC của slide, không phải chunk GIỐNG slide.**
-  Retrieval một mình không đủ — bắt buộc có bước LLM verify.
-- 4 truy vấn mỗi slide: title / message / entities / relations → hợp + khử trùng
-- Verify phải **bắt trích 2 câu bằng chứng**; không trích được → hạ confidence
-- Quan hệ: `source_of` | `elaborates` | `evidence_for` | `contrast` | `none`
-- **Backfill 2 chiều.** Chunk không map được → `align_role: "background"`, GIỮ LẠI.
-  Đó là phần kiến thức slide đã lược bỏ, là lý do KB tồn tại.
-- Skip align với `slide_type` ∈ {title, agenda, section_header, thank_you, qa}
+1. **Luật đang nằm ở `src/kb/`, mà `src/parsing/flags.py` ở phía trên nên không biết**
+   → 7 cờ `[error] empty_page` vẫn bắn oan, CLI thoát mã 1, CI đỏ giả. Chuyển luật lên
+   `src/parsing/` rồi `chunk.py` chỉ đọc field.
+2. **Thiếu `exercise`** — trang bài tập thì robot ĐỌC yêu cầu, không giảng. `title` và
+   `agenda` chỉ 2 trang trong 40, lợi ích nhỏ.
+
+Luật `exercise` dùng lại chính cờ `header_title_mismatch` của S0 — cái tưởng là cảnh báo
+lỗi hoá ra là tín hiệu phân loại.
+
+> Nhược điểm phải nhận: luật fit trên MỘT deck, deck khác bố cục khác là gãy. Nhưng gãy
+> thì nhìn bảng phân loại là thấy ngay, còn LLM gán sai thì im lặng. §2 NT2 ưu tiên
+> deterministic.
+
+- `bbox` thay cho `relations`: "sơ đồ bên trái" → so `bbox.center[0]` của các mẩu trên
+  trang. Đo được ở p19: code `cx=0.28` (trái), chart `cx=0.71` (phải).
+- Sinh/bổ sung `pronunciation.json` từ `entities` — xem
+  [docs/spec/pronunciation.md](docs/spec/pronunciation.md). Đây là lý do chính `entities`
+  còn sống: S4 **đếm âm tiết theo bảng đó**, và TTS đọc theo bảng đó.
+  **Máy đề xuất, NGƯỜI chốt** — đo được: không tách nổi tiếng Việt không dấu (`quan`,
+  `hoa`, `xanh`) khỏi tiếng Anh (`plot`, `sin`) bằng luật ký tự.
+
+### S2 — co lại, phần lớn đã deterministic
+
+- **`sections` KHÔNG cần LLM.** Dựng từ `page_header` ngay ở S0 — đo được: 7 section,
+  confidence 0.95, đối chiếu mục lục khớp 7/7.
+- **`time_budget`**: chia theo số trang `content` của từng section. Không cần model.
+- **`concept_map` / `dependencies` / `arc`: BỎ.** Chúng sinh ra để bơm ngữ cảnh toàn cục
+  vào prompt. Thiết kế này không làm thế — S4 đọc nội dung CHÍNH TRANG ĐÓ.
+- Validate `sections` bằng code, không tin LLM: phủ kín · không chồng · liên tục.
+  Vi phạm thường là lỗi thật của bộ slide → báo S7, KHÔNG tự sửa.
+
+### S3 — BỎ ở v0
+
+§3.0: KB đến từ chính file slide, nên align slide vào nguồn là align nó vào chính nó.
+Luật đầy đủ của S3 giữ lại ở đây cho v1, khi có `source/*.pdf` riêng — xem lịch sử git.
 
 ### S4
 
+- **Input mỗi trang: nội dung CHÍNH TRANG ĐÓ** (`KBChunk` của trang) + `title` trang
+  trước/sau + `slide_type`. **KHÔNG nhồi cả deck vào prompt.**
 - Mọi câu `content` phải có `grounding`; `null` → flag đỏ (NT4 §2)
-- Chia theo `build_step`, không tiết lộ nội dung chưa hiện lên
+- `slide_type` quyết định độ dài: `section_divider` thì một câu chuyển là xong,
+  `title`/`agenda` cũng ngắn. Chỉ `content` mới viết dài.
 - Pass 2 cân thời lượng theo `time_budget` của S2
 - Tiếng Việt: **190–210 âm tiết/phút**. Đếm âm tiết, KHÔNG đếm từ,
   và đếm **theo `pronunciation.json`** (viết tắt đọc thế nào thì đếm thế ấy)
-- Dùng `concept_map` để KHÔNG giải thích lại khái niệm đã định nghĩa ở trang trước
 - **Tự nhiên — 7 đòn bẩy, xếp theo tác động:**
   1. **Văn nói ≠ văn viết** (nguyên nhân số một). Cấm `việc…`, `sự…`, `được thực hiện bởi`,
      danh từ hoá. Câu chủ động, mệnh đề ngắn.
   2. **Nhịp** — trộn câu 6–12 / 15–20 / 25–30 âm tiết. Đo bằng **độ lệch chuẩn ≥ 6**.
   3. **`prosody` mỗi câu**: `emphasis[]`, `pause_before_ms`, `speed`
-  4. **Từ diễn ngôn đặt ĐÚNG ranh giới cấu trúc** (đầu `build_step`, sau một con số,
-     trước một tương phản) — lấy từ `arc` + `dependencies`. Rải ngẫu nhiên tệ hơn không có.
-  5. Câu hỏi tu từ ở ranh giới section (từ `arc`)
-  6. Không đọc bullet, không đọc bảng theo hàng
+  4. **Từ diễn ngôn đặt ĐÚNG ranh giới cấu trúc** — ranh giới lấy từ `sections` (đã có
+     từ S0) và `slide_type`. Rải ngẫu nhiên tệ hơn không có.
+  5. Câu hỏi tu từ ở trang `section_divider` — đó là ranh giới chương
+  6. Không đọc bullet, không đọc bảng theo hàng, **không đọc mã nguồn thành tiếng** —
+     chỉ nói TÊN HÀM và nó làm gì. Người thật không đọc "pi-eo-ti chấm ép-rờ-bo mở
+     ngoặc", họ nói "gọi errorbar, truyền thêm sai số trục y".
+     Hệ quả: bảng phát âm chỉ cần ~25 mục, không phải 335.
   7. `max_syllables` mỗi câu = **30** (không phải 40) — ranh giới ngắt của R7 là ranh
      giới câu, câu 40 âm tiết ≈ 12s không ngắt được
 - **Pass 2 cắt theo thứ tự: trùng lặp ở câu `content` TRƯỚC, câu `delivery` SAU CÙNG.**
   Sàn 10% `delivery` là cứng. Không có luật này thì cân giờ vài vòng là kịch bản khô lại.
 
-### S6a — Build SlideIndex
+### S6a — dùng lại index của S5, không dựng index riêng
 
-- Multi-field embed, **KHÔNG gộp một vector**: `v_message` (quan trọng nhất) · `v_title`
-  · `v_desc` · `v_relations` · sparse(`entities`+`keywords`) · `v_section` · `v_concept`
-- **Self-retrieval check**: query bằng chính `message[i]` → top-1 phải là slide `i`.
-  Không ra → biểu diễn lẫn nhau → R2 sẽ trượt ở runtime → flag NGAY, trước khi S4 tiêu tiền.
-- Sinh `deck_map.txt` (~150 token: danh sách section) thay cho `slide_index.txt` cũ
-- Tên collection phải nhúng `model_id` — đổi embedding model mà không rebuild thì runtime
-  truy vấn index cũ bằng vector mới và trả rác **mà không báo lỗi**
+- **Một vector cho mỗi chunk**, đã có ở `src/kb/embed.py`. Multi-field **BỎ**: nó cần
+  `message` / `desc` / `relations` tách riêng, mà §5 S1 đã bỏ hết.
+- Tìm là **hybrid dense + BM25, gộp bằng RRF** — xem
+  [docs/spec/search.md](docs/spec/search.md). Đo được: hybrid hơn từng nhánh riêng.
+- **Self-retrieval check** (`src/kb/audit.py`): lấy nội dung trang `i` làm truy vấn →
+  top-1 phải ra trang `i`. **Cảnh báo: bài này hiện gần như luôn 100%** vì câu hỏi lấy
+  từ chính văn bản — đề bài là đáp án. Nó chỉ chứng minh **không có hai chunk trùng nhau**.
+  Thứ đo thật là bộ câu hỏi người viết ở `data/eval/queries.json` (`src/kb/eval.py`).
+- Sinh `deck_map.txt` (~150 token: danh sách section) cho prompt runtime
+- Tên file vector phải nhúng `model_id` — đổi embedding model mà không sinh lại thì
+  runtime truy vấn index cũ bằng vector mới và trả rác **mà không báo lỗi**
 
 ### S6b — Precompute
 
@@ -210,6 +284,7 @@ S5 ∥ S0 → S1 → S2 ─┬─► S6a → self-retrieval check ──┐
 - `qa_cache` match ngưỡng > 0.88 mới dùng
 - **Một `voice_id` duy nhất** cho cả precomputed lẫn streaming runtime. Lệch giọng giữa
   câu kịch bản và câu trả lời là artifact chói tai nhất của cả hệ thống.
+- `pronunciation.json`: xem [docs/spec/pronunciation.md](docs/spec/pronunciation.md).
 - Hash `pronunciation.json` ghi vào `Scenario`; S6b **so hash trước khi synth**.
   Lệch bảng = S4 đếm một đằng, TTS đọc một nẻo, timing sai mà không ai thấy.
 - Xuất **bản nghe thử** (3 trang + mọi câu bị flag) cho S7
@@ -218,12 +293,12 @@ S5 ∥ S0 → S1 → S2 ─┬─► S6a → self-retrieval check ──┐
 
 ## 6. Runtime (R1–R7)
 
-| | Lớp | | Lớp |
-|---|---|---|---|
-| **R1** | Intake & fast-path | **R5** | Streaming speech |
-| **R2** | Slide navigation | **R6** | State machine & sync |
+|              | Lớp                    |              | Lớp                    |
+| ------------ | ----------------------- | ------------ | ----------------------- |
+| **R1** | Intake & fast-path      | **R5** | Streaming speech        |
+| **R2** | Slide navigation        | **R6** | State machine & sync    |
 | **R3** | Context-aware rewriting | **R7** | Interrupt & turn-taking |
-| **R4** | Grounded answering | | |
+| **R4** | Grounded answering      |              |                         |
 
 **R2, R3, R4 KHÔNG phải ba lần gọi** — chúng là ba mặt của MỘT lần gọi LLM.
 Escalation không phải lớp riêng, nó là nhánh kết thúc của R4.
@@ -246,18 +321,25 @@ input → regex fast-path ──(khớp)──→ goto_slide()          [~5ms]
 
   ```
   TRẠNG THÁI  -> inline, bounded   "tôi đang nhìn gì" — không index nào trả lời được
-                 SlideRepr trang hiện tại · history 3 lượt · deck_map (~150 tok)
+                 KBChunk trang hiện tại · history 3 lượt · deck_map (~150 tok)
   TRI THỨC    -> TRUY XUẤT         slide_index · concept · section · KB chunk
   ```
 
   Prompt mục tiêu **~1.3k token**, không phải 3.6k.
 - **R2 = retrieve → rerank → LLM chọn.**
-  - hybrid multi-field trên `slide_index_{deck}` → **top-k = 5** → rerank
-    (`bge-reranker-v2-m3`) → **top-3** → LLM chỉ VERIFY và CHỌN trong 3, kèm lý do
+
+  - hybrid dense + BM25 gộp bằng RRF (`src/kb/search.py`) → **top-k = 5** → rerank →
+    **top-3** → LLM chỉ VERIFY và CHỌN trong 3, kèm lý do
+  - **Nhánh điều hướng phải TẮT lọc trang phân mục**: hỏi "quay lại phần đồ thị ba chiều"
+    thì trang MỞ CHƯƠNG mới là đáp án đúng (`--no-filter`)
+  - ⚠️ **Reranker chưa chốt.** `bge-reranker-v2-m3` là model local 2.2 GB, ngược với
+    quyết định "không chạy model local nào" ở §12. Chưa có reranker thì chưa dựng được
+    confidence gate, và §11 `harmful_jump` không đo được. Phải quyết trước khi làm R2.
   - Trượt ở tầng truy xuất thì tầng LLM KHÔNG cứu được → theo dõi `recall@k`,
     dưới 95% thì nới `k`
 - **R3 tách đôi để gỡ vòng tròn** (muốn truy xuất cần query đã rewrite, muốn rewrite
   cần LLM, LLM chạy sau truy xuất):
+
   - **R3a — mở rộng query, DETERMINISTIC, ~5ms, không gọi model.** Khớp chuỗi từ chỉ trỏ
     vào `relations[].visual` / `visual_elements`, nối thêm `entities` trang hiện tại
     → `query_expanded` dùng để TRUY XUẤT.
@@ -265,14 +347,15 @@ input → regex fast-path ──(khớp)──→ goto_slide()          [~5ms]
     `text` GỐC mới là thứ dùng để sinh câu trả lời.
 - **Confidence gate:** `margin = rerank(top1) − rerank(top2) < threshold` → KHÔNG nhảy,
   hỏi lại + thumbnail.
+
   - Score lấy từ **RERANKER** — số thật, calibrate được. KHÔNG dùng điểm LLM tự khai
     (tự tin thái quá có hệ thống).
   - Ngưỡng **fit trên bộ eval 50 câu có nhãn**, KHÔNG đoán. Điểm vận hành:
     `harmful_jump < 2%`, chấp nhận `ask_rate ~15%`. Để trong config, không hardcode.
   - Chỉ có 1 ứng viên trên ngưỡng sàn → coi như `margin = 0` → hỏi lại.
 - **QA_CURRENT trả lời thẳng trong lần gọi routing**, không gọi tool rồi gọi LLM lần nữa
-  (tiết kiệm 400–700ms). Bắt buộc kèm `grounding` trỏ vào `slide_repr`, validate ref bằng code.
-  `SlideRepr` đã qua S7 duyệt nên nó LÀ nguồn đã kiểm, không phải trí nhớ của model.
+  (tiết kiệm 400–700ms). Bắt buộc kèm `grounding` trỏ vào `chunk_id` của trang, validate ref bằng code.
+  Nội dung trang đã qua S7 duyệt nên nó LÀ nguồn đã kiểm, không phải trí nhớ của model.
 - **Ma trận ngắt (R7):** điều hướng → ngắt ngay ở ranh giới câu · hỏi nội dung → đợi hết
   trang (trừ khi hàng đợi > 3) · meta → áp dụng ngay, KHÔNG ngắt lời · đang `navigating`
   → đợi ack xong đã.
@@ -287,7 +370,43 @@ input → regex fast-path ──(khớp)──→ goto_slide()          [~5ms]
 
 ---
 
-## 7. Cấu trúc lưu trữ (nhiều deck)
+## 7. Cấu trúc lưu trữ
+
+### 7.0 HIỆN TRẠNG v0 — file JSON trên đĩa, chưa có DB ★
+
+Chưa dựng Qdrant, chưa có tầng shared/per-deck. Mọi thứ là file JSON để mở ra xem:
+
+```
+data/raw/<ten>.pdf                        file gốc — VỪA là deck VỪA là KB
+data/patches/<ten>.json                   nội dung gõ tay cho trang parser bỏ sót
+data/eval/queries.json                    câu hỏi có nhãn để đo retrieval
+out/parse_api/<ten>__<model>.{md,json}    docling thô  (scripts/parse_api.py)
+out/parsed/<doc_id>.json                  ParsedDocument (src/parsing/cli.py)
+out/kb/<doc_id>.chunks.json               KBChunk[]     (src/kb/cli.py)
+out/kb/<doc_id>__<model_id>.vectors.npy   ma trận vector + .vectors.json (thứ tự hàng)
+out/kb/.embed_cache/<model>/<sha1>.npy    cache theo hash nội dung
+out/kb/audit/{self_retrieval,eval}.json   kết quả đo
+out/pages/<ten>_pNNN.png                  ảnh có khung bbox, để soi mắt
+```
+
+**Kịch bản sẽ nằm ở đây** (chưa có code):
+
+```
+out/deck/<doc_id>/
+├── scenario.json          kịch bản CẢ deck, mỗi entry kèm page_hash cho incremental
+├── pronunciation.json     viết tắt đọc thế nào — S4 đếm âm tiết theo bảng này
+│                          MÁY đề xuất, NGƯỜI chốt (docs/spec/pronunciation.md)
+└── precomputed/<hash câu>.wav    TTS cache, key = hash TỪNG CÂU
+```
+
+**Kịch bản KHÔNG để chung với `ParsedDocument`** (parse lại là mất, đúng bẫy đã dính với
+trang 15) **và KHÔNG để chung với `KBChunk`** (sửa một câu thoại không được làm bẩn index).
+
+Chưa dựng Qdrant và **chưa cần**: 52 vector, quét vét cạn hết **0.01ms**; ngay cả
+100.000 vector cũng chỉ 25ms, trong khi gọi API nhúng câu hỏi đã mất ~700ms. Qdrant mua về
+metadata filter và nhiều deck, không phải tốc độ. Sơ đồ §7.1 là đích, chưa áp dụng.
+
+### 7.1 Đích (nhiều deck)
 
 ```
 SHARED LAYER              ← dùng chung mọi deck
@@ -297,8 +416,8 @@ SHARED LAYER              ← dùng chung mọi deck
 
 PER-DECK LAYER
 └── deck_{id}/
-    ├── SlideRepr[]  DeckStructure  AlignmentMap  Scenario
-    ├── Qdrant: slide_index__{deck_id}__{model_id}   ← multi-field
+    ├── Scenario  ·  pronunciation.json
+    ├── Qdrant: slide_index__{deck_id}__{model_id}
     ├── deck_map.txt        (~150 token, danh sách section)
     ├── audit/self_retrieval.json
     └── precomputed/
@@ -317,17 +436,16 @@ SESSION LAYER
 ## 8. Incremental build
 
 ```
-hash slide không đổi → reuse SlideRepr, Scenario, TTS
-hash slide đổi       → chạy lại S1, S3, S4 cho riêng nó
-luôn chạy lại S2     → cấu trúc toàn cục có thể lệch
-luôn chạy lại S6a    → SlideIndex phụ thuộc S1+S2, rẻ (~25s)
-S5 gần như không bao giờ chạy lại
+page_hash không đổi → reuse Scenario, TTS, vector (cache đã lo)
+page_hash đổi       → chunk + nhúng lại RIÊNG trang đó, chạy lại S4 cho nó
+luôn chạy lại S2     → slide_type/sections là luật, rẻ
+luôn chạy lại S6a    → deck_map + audit, rẻ
 ```
 
 Sửa 3/20 trang → ~40s thay vì ~6 phút.
 
-Lan `dirty`: slide hash đổi → **cộng thêm** slide kề sau (vì câu chuyển) và slide có
-`dependencies` giao tập dirty (vì tham chiếu ngược).
+Lan `dirty`: page_hash đổi → **cộng thêm** trang kề sau, vì câu chuyển của nó nhắc tới
+trang vừa đổi.
 
 Người duyệt sửa `pronunciation.json` ở S7 → **đếm lại âm tiết** (rẻ, không gọi LLM) +
 synth lại câu chứa từ đó; lệch timing > 15% thì chạy lại pass 2 của S4.
@@ -349,11 +467,13 @@ synth lại câu chứa từ đó; lệch timing > 15% thì chạy lại pass 2 
 
 | Việc            | Dùng                                                            |
 | ---------------- | ---------------------------------------------------------------- |
-| Parse pptx       | `python-pptx` + đọc XML thô cho animation timing            |
-| Render PNG       | LibreOffice headless → PDF →`PyMuPDF` rasterize              |
+| Parse PDF (v0)   | `docling` (layout + TableFormer local, VLM mô tả ảnh qua API)  |
+| Render PNG (v0)  | `pypdfium2`                                                    |
+| Parse pptx (v1)  | `python-pptx` + đọc XML thô cho animation timing            |
+| Render PNG (v1)  | LibreOffice headless → PDF →`PyMuPDF` rasterize              |
 | Parse PDF nguồn | `PyMuPDF`, `unstructured` hoặc `docling` cho cây heading |
-| Embedding        | `bge-m3` (dense + sparse trong 1 forward)                      |
-| Rerank           | `bge-reranker-v2-m3` — dùng cho cả R2 lẫn S3                |
+| Embedding        | **v0: `text-embedding-3-small` qua API** (dense-only, 1536 chiều) · đích: `bge-m3` (dense + sparse 1 forward) |
+| Rerank           | `bge-reranker-v2-m3` — dùng cho cả R2 lẫn S3               |
 | Vector DB        | Qdrant (cần metadata filter tốt)                               |
 | Schema           | Pydantic v2                                                      |
 
@@ -365,13 +485,16 @@ SmartArt đôi khi vỡ). Phải cài font Việt vào container.
 ## 10. CẤM
 
 - ❌ Để LLM sinh lại `title`, `chart_data`, `tables` — đã có bản đúng từ S0
+  (v0: chỉ còn **text layer của PDF** là bản đúng; `chart_data`/`tables` không có
+  nguồn deterministic nên mọi số đọc từ biểu đồ phải khai `provenance: vlm`)
+- ❌ Coi mô tả ảnh do VLM sinh là dữ liệu chắc đúng — nó là `vlm`, đo được là có sai
+  (chép `0x1675e5550` thành `0x1675e550`)
 - ❌ Fixed-size chunking ở S5
 - ❌ Embed `text_raw` thay vì `text_enriched`
-- ❌ Nhận link alignment chỉ dựa trên similarity score, bỏ qua bước verify
-- ❌ Vứt chunk `background` (không map được vào slide nào)
-- ❌ **Nhồi index hoặc bảng toàn bộ vào prompt** (`slide_index` cả deck, `concept_map`
-  cả deck) — chỉ TRẠNG THÁI mới được inline, TRI THỨC phải truy xuất
-- ❌ Gộp một vector cho cả slide — phải multi-field
+- ❌ Vứt chunk vì tưởng nó vô dụng (trang phân mục, chunk trùng) — ĐÁNH DẤU rồi lọc
+  lúc truy vấn, đừng xoá. Xoá sai thì phải nhúng lại; lọc sai thì sửa một dòng luật.
+- ❌ **Nhồi index hoặc nội dung cả deck vào prompt** — chỉ TRẠNG THÁI mới được inline,
+  TRI THỨC phải truy xuất. Áp cho cả S4: viết kịch bản trang nào thì đọc trang đó.
 - ❌ Dùng điểm LLM tự khai làm confidence gate khi đã có điểm reranker
 - ❌ Tách router riêng ở runtime (thêm 300–400ms vô ích)
 - ❌ Đợi generate xong mới TTS
@@ -387,11 +510,11 @@ SmartArt đôi khi vỡ). Phải cài font Việt vào container.
 - ❌ Ngắt giữa câu (trừ điều hướng, và phải fade ~80ms)
 - ❌ Đọc to câu hỏi troll rồi mới từ chối — đọc lên là troll thành công
 - ❌ Nói trước khi nhận ack của renderer
-- ❌ `message` / `description` / `gloss` / `summary` chứa đại từ trỏ ra ngoài trang
-  hoặc từ chỉ vị trí — chúng bị embed một mình
+- ❌ `description` (mô tả ảnh của VLM) chứa đại từ trỏ ra ngoài trang hoặc từ chỉ vị trí
+  (`nó`, `cái này`, `như trên`, `ở phần trước`) — nó bị embed và đứng một mình trong index
 - ❌ Pass 2 của S4 cắt câu `delivery` xuống dưới sàn 10%
 - ❌ Giọng TTS của precomputed khác giọng của streaming runtime
-- ❌ Đặt tên Qdrant collection không nhúng `model_id`
+- ❌ Đặt tên file vector / collection không nhúng `model_id`
 
 ---
 
@@ -399,34 +522,55 @@ SmartArt đôi khi vỡ). Phải cài font Việt vào container.
 
 | Chỉ số                          | Ngưỡng                                    |
 | --------------------------------- | ------------------------------------------- |
-| Alignment coverage                | ≥ 80% slide có ≥1 nguồn conf > 0.6      |
-| Ungrounded rate (câu `content`)  | < 10%                                       |
+| Ungrounded rate (câu`content`) | < 10%                                       |
 | Timing deviation                  | < 15% so với budget                        |
 | Flag precision (S7)               | ≥ 60%                                      |
 | P95 latency tới byte audio đầu | < 2.5s                                      |
-| Self-retrieval top-1 (S6a)        | ≥ 90% slide                                |
-| R2 recall@5                       | ≥ 95% — dưới thì nới k                  |
+| Self-retrieval top-1 (S6a)        | ≥ 90% — ⚠️ xem cảnh báo dưới bảng    |
+| R2 recall@5                       | ≥ 95% — dưới thì nới k                |
 | R2 Top-1 accuracy                 | báo cáo                                   |
 | R2 harmful jump rate              | báo cáo — nhảy sai mà không hỏi lại |
 
+⚠️ **Self-retrieval hiện gần như luôn 100% và KHÔNG nói lên gì.** Câu hỏi lấy từ chính
+văn bản của chunk — đề bài là đáp án. Nó chỉ chứng minh **không có hai chunk trùng nhau**.
+Số đo thật phải lấy từ bộ câu hỏi **người viết** ở `data/eval/queries.json`
+(`src/kb/eval.py`) — đo được: hybrid 4/7 top-1, dense 3/7, sparse 3/7.
+Xem [docs/spec/search.md §10](docs/spec/search.md).
+
 **Proxy tự nhiên — chạy được trong CI:**
 
-| Chỉ số                       | Ngưỡng |
-| ------------------------------ | -------- |
+| Chỉ số                         | Ngưỡng |
+| -------------------------------- | -------- |
 | Độ lệch chuẩn âm tiết/câu | ≥ 6     |
-| Từ văn viết bị cấm       | = 0      |
-| Tỉ lệ câu `delivery`        | 10–25%  |
+| Từ văn viết bị cấm          | = 0      |
+| Tỉ lệ câu`delivery`         | 10–25%  |
 
 **Naturalness MOS ≥ 3.8/5 KHÔNG phải gate CI** — nó cần 3 người ngồi nghe.
 Đó là **release gate**, chạy trước buổi thuyết trình thật.
 
 ---
 
-## 12. Phạm vi v1
+## 12. Phạm vi
 
-**Trong phạm vi:** chỉ `.pptx` (không nhận PDF làm deck) · kênh hỏi bằng **text**
-(QR → form web, không ASR) · app tự render slide · deck cố định lúc build ·
-tiếng Việt, thuật ngữ giữ gốc tiếng Anh · 1 deck active mỗi phiên
+### v0 — ĐANG LÀM ★
+
+**Trong phạm vi:** **một file `.pdf` duy nhất, vừa làm deck vừa làm KB** · parse bằng
+docling, VLM mô tả ảnh gọi **qua API** · nhúng vector cũng **qua API**
+(`text-embedding-3-small`) — **không chạy model local nào** · lưu **file JSON trên đĩa**,
+chưa có vector DB · tiếng Việt, thuật ngữ giữ gốc tiếng Anh
+
+**Chấp nhận đánh đổi** (xem §3.0): không có `chart_data` / `tables` / `build_steps` từ
+XML · S3 Alignment suy biến nên bỏ qua · độ sâu trả lời giới hạn ở mức **mô tả slide** ·
+embedding qua API **chỉ có dense, mất sparse** của `bge-m3` → phải bù bằng BM25 riêng,
+và tốn 719ms/câu hỏi thay vì 182ms (đo thật, xem [embedding.md §2](docs/spec/embedding.md))
+
+**Chưa có:** S2 · S4 kịch bản · S6b TTS · S7 duyệt · toàn bộ runtime R1–R7
+
+### v1 — đích
+
+**Trong phạm vi:** `.pptx` làm deck + `source/*.pdf` **riêng** làm KB · kênh hỏi bằng
+**text** (QR → form web, không ASR) · app tự render slide · deck cố định lúc build ·
+1 deck active mỗi phiên
 
 **Ngoài phạm vi v1:** voice/ASR · robot vật lý · điều khiển PowerPoint ngoài ·
 upload deck lúc runtime · cross-deck navigation

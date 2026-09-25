@@ -1,0 +1,54 @@
+{
+  "note": "Bộ câu hỏi có nhãn để đo retrieval. CLAUDE.md §6 đòi 50 câu; hiện mới có 7 và TOÀN BỘ do AI tự nghĩ ra rồi tự gán nhãn — thiên vị, chưa dùng để kết luận được. Người thật viết thêm vào đây.",
+  "doc_id": "3_datavisualization",
+  "fields": {
+    "q": "câu hỏi, gõ CÓ DẤU (gõ không dấu thì BM25 về 0)",
+    "page": "trang đúng; dùng list nếu nhiều trang cùng đúng",
+    "by": "ai viết câu này — ai | nguoi",
+    "why": "vì sao trang đó là đáp án (để người sau kiểm được nhãn)"
+  },
+  "queries": [
+    {
+      "q": "làm sao lưu biểu đồ ra file ảnh",
+      "page": 11,
+      "by": "ai",
+      "why": "p11 chứa plt.savefig('line_graph.png')"
+    },
+    {
+      "q": "đồ thị điểm rời rạc là cái gì ",
+      "page": 17,
+      "by": "ai",
+      "why": "p17 có 'Đồ thị điểm rời rạc (scatter plot) là đồ thị biểu diễn các điểm dữ liệu rời rạc trên mặt phẳng tọa độ'"
+    },
+    {
+      "q": "savefig",
+      "page": 11,
+      "by": "ai",
+      "why": "hỏi thẳng bằng tên hàm"
+    },
+    {
+      "q": "plt.savefig lưu ảnh",
+      "page": 11,
+      "by": "ai",
+      "why": "lai giữa tên hàm và tiếng Việt"
+    },
+    {
+      "q": "đồ thị dạng đường là gì",
+      "page": 10,
+      "by": "ai",
+      "why": "p10 mở đầu: 'Đồ thị dạng đường thẳng có lẽ là đồ thị đơn giản nhất'"
+    },
+    {
+      "q": "cái dữ liệu hoa mà dùng để làm đồ thị nó nằm chỗ nào  vậy ",
+      "page": 20,
+      "by": "ai",
+      "why": "p20 có 'Dữ liệu hoa Iris là một bộ dữ liệu nổi tiếng trong học máy và thống kê, thường được sử dụng để minh họa các thuật toán phân loại và trực quan hóa dữ liệu.'"
+    },
+    {
+      "q": "vẽ đồ thị ba chiều như thế nào",
+      "page": [33, 34],
+      "by": "ai",
+      "why": "p33 giới thiệu gói 3D, p34 có ax.plot3D — cả hai đều chấp nhận được"
+    }
+  ]
+}

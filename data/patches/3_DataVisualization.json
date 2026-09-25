@@ -1,0 +1,20 @@
+{
+  "note": "docling bo sot noi dung trang 15 — noi dung do la anh chup man hinh dan vao slide, layout model khong nhan ra la anh nen duong VLM cung khong cham toi. Bat OCR doc duoc nhung hong dau tieng Viet ('Liet ke' -> 'Lit ke') va cham 8.4x, nen go tay.",
+  "pages": {
+    "15": {
+      "note": "code liet ke ten + ma mau matplotlib, va bang ket qua ben canh",
+      "add_blocks": [
+        {
+          "role": "body",
+          "bbox": [0.077, 0.545, 0.495, 0.685],
+          "text": "#Liệt kê tên và mã màu trong Matplotlib\nfor name, hex in mpl.colors.cnames.items():\n    print(name, hex, \" \", end=\" \")"
+        },
+        {
+          "role": "body",
+          "bbox": [0.510, 0.350, 0.910, 0.667],
+          "text": "Kết quả in ra danh sách tên màu kèm mã hex của Matplotlib: aliceblue #F0F8FF, antiquewhite #FAEBD7, aqua #00FFFF, aquamarine #7FFFD4, azure #F0FFFF, beige #F5F5DC, bisque #FFE4C4, black #000000, blanchedalmond #FFEBCD, blue #0000FF, blueviolet #8A2BE2, brown #A52A2A, burlywood #DEB887, cadetblue #5F9EA0, chartreuse #7FFF00, chocolate #D2691E, coral #FF7F50, cornflowerblue #6495ED, cornsilk #FFF8DC, crimson #DC143C, cyan #00FFFF, darkblue #00008B, darkcyan #008B8B, darkgoldenrod #B8860B, darkgray #A9A9A9, darkgreen #006400, darkgrey #A9A9A9, darkkhaki #BDB76B, darkmagenta ..."
+        }
+      ]
+    }
+  }
+}

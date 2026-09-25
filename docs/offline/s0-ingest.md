@@ -4,6 +4,13 @@
 **Output:** `RawSlide[]` + `render/s{n}.png`
 **Model:** không có. Thuần parsing.
 
+> **v0 KHÔNG chạy theo file này.** Đang nhận **PDF**, parse bằng `docling`, mô tả ảnh
+> gọi VLM **qua API**. Output là `ParsedDocument`, không phải `RawSlide[]`.
+> Code: [`src/parsing/`](../../src/parsing/) · Spec: [parsed-document.md](../spec/parsed-document.md)
+>
+> Mất so với bản pptx dưới đây: `chart_data`, `tables`, `build_steps` — chúng đến từ
+> XML mà PDF không có. Hệ quả cho NT2 xem [CLAUDE.md §3.0](../../CLAUDE.md).
+
 ---
 
 ## 1. S0 làm gì

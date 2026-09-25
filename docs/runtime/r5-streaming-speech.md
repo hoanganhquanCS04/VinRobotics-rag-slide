@@ -147,7 +147,7 @@ nghe như người ta ngừng lời.
 Cả hai đi qua **cùng một hàng phát** để trạng thái "đang nói câu nào" là một. Hai đường
 phát riêng thì barge-in phải xử lý hai chỗ, và sớm muộn quên một chỗ.
 
-`tts_hash` của [S4](../offline/s4-scenario.md)/[S6](../offline/s6-precompute.md) và hash
+`tts_hash` của [S4](../offline/s4-scenario.md)/S6 và hash
 dùng lúc runtime phải **cùng một hàm** — lệch thì cache không bao giờ hit và không ai
 nhận ra, chỉ thấy hoá đơn TTS cao.
 

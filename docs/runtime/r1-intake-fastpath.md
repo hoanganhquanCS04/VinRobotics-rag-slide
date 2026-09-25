@@ -156,7 +156,7 @@ Rất dễ code sai vì `advance()` nghe như "sang trang".
 
 Ham một chút là có ngày `"quay lại chỗ nói về việc train lại"` khớp mẫu `quay lại` và
 nhảy về trang trước — trong khi đó là một câu hỏi điều hướng ngữ nghĩa thuộc
-[R2](./r2-navigation.md).
+R2.
 
 Quy tắc an toàn: mẫu regex phải **neo vào đầu chuỗi** và **giới hạn độ dài** (lệnh điều
 hướng thật hầu như luôn dưới 5 từ). Câu dài hơn → đẩy xuống LLM.
