@@ -128,8 +128,8 @@ delivery   dẫn dắt, chuyển ý, hỏi tu từ  KHÔNG được mang sự th
 
 ```
 [delivery]  "Vẽ xong rồi thì lưu lại kiểu gì?"                     ← không có sự thật nào
-[content]   "Gọi savefig kèm tên file, matplotlib ghi ra ảnh PNG."  → p011.b02
-[content]   "Muốn ảnh nét hơn thì thêm tham số dpi."                 → p011.b02
+[content]   "Gọi savefig kèm tên file, matplotlib ghi ra ảnh PNG."  → p011.b01
+[content]   "Muốn ảnh nét hơn thì thêm tham số dpi."                 → p011.b01
 ```
 
 **Tỉ lệ `delivery`: 10–25% tổng âm tiết**, 10% là sàn cứng. Dưới sàn thì robot nghe như
@@ -270,7 +270,7 @@ class Prosody(BaseModel):
 
 class Grounding(BaseModel):
     type: Literal["kb_chunk", "structure", "style"]
-    ref: str | None = None            # block_id, vd "p011.b02"; None với structure/style
+    ref: str | None = None            # block_id, vd "p011.b01"; None với structure/style
 
 class Sentence(BaseModel):
     kind: Literal["content", "delivery"]

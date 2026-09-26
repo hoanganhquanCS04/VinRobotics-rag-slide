@@ -22,8 +22,7 @@ out/parse_api/<ten>.json                   docling thô — không ai đọc tr�
         │    + vá tay data/patches/<ten>.json (nếu có)
         │    + dựng chương từ thanh header, soi cờ
         ▼
-out/parsed/<ten>.json            ★ ParsedDocument — NGUỒN của mọi bước sau
-out/parsed/<ten>.compact.json      bản gọn để người đọc
+out/parsed/<ten>.json            ★ ParsedDocument — NGUỒN của mọi bước sau, mở ra đọc được luôn
         │
         ├──③ chunk + nhúng vector ───────────────── 💰 embedding (có cache)
         │      ▼
@@ -81,8 +80,8 @@ Chi tiết: [spec/parsed-document.md](../spec/parsed-document.md)
 ParsedDocument   doc_id · source · parser · sections[] · flags[]
  └─ pages[]      page_no · title · section_id · page_hash
      ├─ blocks[]      NỘI DUNG, theo thứ tự đọc
-     │    └─ id · kind · content · polygon · provenance
-     └─ furniture[]   role: header · footer · page_number — không vào KB, dùng để dựng chương
+     │    └─ id · kind · role · content · polygon · provenance
+     └─ furniture     {header, footer[]} — không vào KB; header là nguồn dựng chương
 ```
 
 Mỗi block trả lời ba câu, loại nào cũng vậy:
@@ -94,7 +93,7 @@ Mỗi block trả lời ba câu, loại nào cũng vậy:
 | tin được không | `provenance` | `text_layer` đúng 100% · `vlm` máy tả, có thể sai · `manual` người sửa |
 
 ```json
-{"id": "p002.b01", "kind": "paragraph", "content": "Mùng 1",
+{"id": "p002.b01", "kind": "paragraph", "role": "body", "content": "Mùng 1",
  "polygon": [[0.232, 0.33], [0.768, 0.33], [0.768, 0.552], [0.232, 0.552]],
  "provenance": "text_layer"}
 ```

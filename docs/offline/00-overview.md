@@ -207,7 +207,7 @@ VÀO  data/raw/<ten>.pdf
   │              OCR TẮT: đo được bật chậm 8.4×, markdown GIỐNG HỆT
   │
   ├─> [VLM qua API]  mỗi ảnh một request, prompt ở prompts/s5_picture_desc.md
-  │                  ảnh < 5% diện tích ─> skip, ghi skip_reason
+  │                  ảnh < 5% diện tích ─> skip, ghi why_empty
   │                  ảnh trang trí ─> VLM tự trả DECORATIVE
   │                  provenance = vlm    <- CÓ THỂ BỊA (NT2)
   │

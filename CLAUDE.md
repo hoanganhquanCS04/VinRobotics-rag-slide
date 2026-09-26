@@ -152,14 +152,18 @@ S0 → S5 (chunk+embed) ─┬─► S6a deck_map + audit ──┐
 Xem [docs/spec/parsed-document.md](docs/spec/parsed-document.md) cho schema đầy đủ.
 
 - Thứ tự đọc đi theo `body.children` của docling, **KHÔNG** đọc tuần tự mảng `texts[]`
-- Chuẩn hoá bbox: gốc DƯỚI-TRÁI của docling → **TRÊN-TRÁI**, `[0,1]`
+- Chuẩn hoá toạ độ: gốc DƯỚI-TRÁI của docling → **TRÊN-TRÁI**, `[0,1]`, lưu thành `polygon`
+  4 góc. **Ngoại lệ `.pptx`**: docling gắn nhãn `BOTTOMLEFT` nhưng số đo từ ĐỈNH — không lật
 - **GIỮ `furniture`** (header/footer), tách rổ riêng. Thanh header chạy là nguồn
   duy nhất dựng được section — docling cho `level=1` trên mọi tiêu đề
 - Mô tả ảnh gọi VLM **qua API**, mỗi ảnh một request, prompt ở `prompts/*.md`
-- Ghi `skip_reason` khi không gọi API — phân biệt *chưa gọi* với *gọi mà fail*
+- Ảnh không có mô tả phải ghi `why_empty` — phân biệt *chưa gọi* (`area_below_threshold`)
+  với *gọi mà fail* (`api_error`) và *đủ to mà không có* (`not_described`)
 - Tắt OCR: PDF export từ PowerPoint đã có text layer. Đo được: bật OCR chậm 8.4×,
   markdown **giống hệt**
-- `page_hash` = SHA(nội dung + bbox từng mẩu), cho incremental build
+- `page_hash` = SHA(nội dung + polygon từng block + furniture), cho incremental build
+- Mỗi block có `content` · `polygon` · `provenance`. MỘT file, vừa để người đọc vừa để
+  pipeline chạy — trường rỗng không ghi, không lưu thứ suy ra được
 
 **Mấy luật dưới đây chỉ áp dụng khi quay lại `.pptx`** (đích, chưa làm):
 
@@ -214,7 +218,7 @@ lỗi hoá ra là tín hiệu phân loại.
 > thì nhìn bảng phân loại là thấy ngay, còn LLM gán sai thì im lặng. §2 NT2 ưu tiên
 > deterministic.
 
-- `bbox` thay cho `relations`: "sơ đồ bên trái" → so `bbox.center[0]` của các mẩu trên
+- `polygon` thay cho `relations`: "sơ đồ bên trái" → so `block.center[0]` của các mẩu trên
   trang. Đo được ở p19: code `cx=0.28` (trái), chart `cx=0.71` (phải).
 - Sinh/bổ sung `pronunciation.json` từ `entities` — xem
   [docs/spec/pronunciation.md](docs/spec/pronunciation.md). Đây là lý do chính `entities`

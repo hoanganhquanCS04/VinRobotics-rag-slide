@@ -124,11 +124,11 @@ khỏi parse lại (parse lại **tốn tiền API**).
 ## 6. Metadata
 
 ```python
-chunk_id       "3_DataVisualization#p011"
+chunk_id       "3_datavisualization#p011"
 page_no        11
 section_id     "sec_00"
 section_title  "Đồ thị dạng đường"
-block_ids      ["p011.b01", "p011.b02"]      ← truy ngược về đúng mẩu
+block_ids      ["p011.b00", "p011.b01"]      ← truy ngược về đúng mẩu
 provenance     {"text_layer": 1, "vlm": 1}   ← phần nào chắc đúng, phần nào model sinh
 content_type   "content" | "section_divider"
 token_count    178

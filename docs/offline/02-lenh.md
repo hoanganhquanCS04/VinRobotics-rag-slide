@@ -22,7 +22,6 @@ Trong các lệnh dưới, thay `<ten>` bằng tên deck, ví dụ `tetnguyendan
 .venv\Scripts\python.exe scripts\parse_api.py data\raw\<ten>.pptx
 
 # ② ra cấu trúc của mình                                     -> out\parsed\<ten>.json
-#                                                               out\parsed\<ten>.compact.json
 .venv\Scripts\python.exe src\parsing\cli.py out\parse_api\<ten>.json -o out\parsed\<ten>.json
 
 # ③ chunk + nhúng vector                                     -> out\kb\<ten>.chunks.json + .vectors.npy
@@ -63,16 +62,16 @@ Ghi chú:
 
 ```
 --- trang 2 | (khong tieu de) | chuong: —
-    hash=7765d947895b7b32  starved=False  label=None
-    p002.b00   para/body      5.34% text_layer Khởi Nguồn Nam Mới
-    p002.b01   para/body     11.91% text_layer Mùng 1
+    hash=2adf6b0331dbcc89  starved=False
+    p002.b00   para/body      5.35% text_layer Khởi Nguồn Nam Mới
+    p002.b01   para/body     11.90% text_layer Mùng 1
     ...
 ```
 
 Mỗi dòng: `id` · loại · % diện tích trang · nguồn · nội dung.
 `--page` nhận `11` · `9,11` · `9-15`.
 
-Xem cả deck bằng mắt: mở `out\parsed\<ten>.compact.json` trong VS Code.
+Xem cả deck bằng mắt: mở thẳng `out\parsed\<ten>.json` trong VS Code — file đã gọn, đọc được.
 
 ### Kịch bản
 
@@ -141,8 +140,6 @@ nào kéo lên.
 # xem prompt sẽ gửi LLM, không gọi API
 .venv\Scripts\python.exe src\scenario\cli.py out\parsed\<ten>.json --page 2 --dry-run
 
-# làm mới file .compact.json mà không chạy lại docling
-.venv\Scripts\python.exe src\parsing\cli.py out\parsed\<ten>.json -o out\parsed\<ten>.json
 ```
 
 | Vừa sửa | Chạy lại từ |
