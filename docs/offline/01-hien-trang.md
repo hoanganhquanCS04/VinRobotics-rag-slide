@@ -79,6 +79,7 @@ Chi tiết: [spec/parsed-document.md](../spec/parsed-document.md)
 ```
 ParsedDocument   doc_id · source · parser · sections[] · flags[]
  └─ pages[]      page_no · title · section_id · page_hash
+     ├─ slide_type    section_divider · exercise · content — luật, S4 viết theo loại trang
      ├─ blocks[]      NỘI DUNG, theo thứ tự đọc
      │    └─ id · kind · role · content · polygon · provenance
      └─ furniture     {header, footer[]} — không vào KB; header là nguồn dựng chương
@@ -212,7 +213,7 @@ gọi API**; ④ viết lại cả 10 trang vì toạ độ nằm trong `page_ha
 | | Việc | Ghi chú |
 |---|---|---|
 | ⬜ S2 | `time_budget` theo chương | luật, không gọi model. Hiện trần số câu theo `slide_type` là phanh duy nhất |
-| ⬜ `slide_type` đủ loại | `title` · `agenda` · `exercise` | mới có `section_divider` / `content` |
+| ⬜ `slide_type` đủ loại | `title` · `agenda` | đã có `section_divider` · `exercise` · `content` |
 | ⬜ S6a | `deck_map.txt` (~150 token) cho prompt runtime | audit đã có |
 | ⬜ S6b | TTS theo từng câu, một giọng duy nhất | |
 | ⬜ S7 | người duyệt **chỉ phần bị cờ**, đọc + nghe | |

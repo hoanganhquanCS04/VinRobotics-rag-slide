@@ -30,13 +30,6 @@ TOKENIZER_ID = "cl100k_base"   # tokenizer THẬT của text-embedding-3-*
 MAX_TOKENS = 500
 CHARS_PER_TOKEN = 3.2          # đường lui khi máy không có tiktoken (tiếng Việt, đo thô)
 
-# Trang phân mục: tiêu đề nằm GIỮA trang thay vì góc trên trái.
-# Đo trên 3_DataVisualization — tách bạch, không có vùng xám:
-#     phân mục  cx=0.50  cy=0.47     (7 trang: p9,16,22,25,29,32,35)
-#     nội dung  cx=0.20  cy=0.11
-DIVIDER_MIN_CY = 0.30
-DIVIDER_CX_RANGE = (0.35, 0.65)
-
 
 @lru_cache(maxsize=1)
 def _tokenizer():
@@ -70,17 +63,6 @@ def count_tokens(text: str) -> int:
     return len(enc.encode(text))
 
 
-def is_section_divider(page: ParsedPage) -> bool:
-    """Trang chỉ có một dải tiêu đề giữa trang, không nội dung."""
-    if len(page.paragraphs) != 1:
-        return False
-    title = page.paragraphs[0]
-    if title.role != "title":
-        return False
-    cx, cy = title.center
-    return cy >= DIVIDER_MIN_CY and DIVIDER_CX_RANGE[0] <= cx <= DIVIDER_CX_RANGE[1]
-
-
 def prefix_for(doc: ParsedDocument, page: ParsedPage) -> str:
     """'[Đồ thị dạng đường · trang 11/40] ' — ngữ cảnh, khỏi phải gọi LLM sinh."""
     sec = doc.section_of(page.page_no)
@@ -103,8 +85,9 @@ def _page_chunks(doc: ParsedDocument, page: ParsedPage, max_tokens: int) -> list
         return []
 
     prefix = prefix_for(doc, page)
-    divider = is_section_divider(page)
-    ctype = "section_divider" if divider else "content"
+    # Luật phân loại nằm ở ParsedPage.slide_type — ở đây chỉ đọc. Trang bài tập vẫn là
+    # "content" với KB: nó có nội dung thật, phải tìm được.
+    ctype = "section_divider" if page.slide_type == "section_divider" else "content"
 
     def make(idx: int | None, bs) -> KBChunk:
         raw = "\n".join(b.content or "" for b in bs)

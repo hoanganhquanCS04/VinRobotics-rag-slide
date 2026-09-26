@@ -20,7 +20,6 @@ import os
 import time
 from pathlib import Path
 
-from kb.chunk import is_section_divider
 from parsing.models import ParsedDocument, ParsedImage, ParsedPage, ParsedParagraph
 from scenario import validate
 from scenario.models import Grounding, Prosody, Sentence, SlideScript
@@ -54,16 +53,19 @@ TYPE_RULES = {
         "- Viết 3–6 câu. Mở bằng một câu `delivery` dẫn dắt, rồi các câu `content`.\n"
         "- Giảng điều người học cần nắm. Không tả lại hình ảnh từng chi tiết."
     ),
+    "exercise": (
+        "Đây là TRANG BÀI TẬP: người học cần biết PHẢI LÀM GÌ, không cần nghe giảng.\n"
+        "- Viết 2–4 câu. Một câu `delivery` báo đến phần bài tập, còn lại là `content`.\n"
+        "- ĐỌC LẠI yêu cầu, hạn nộp, thứ cần nộp — đúng như trên trang, không thêm bớt.\n"
+        "- CẤM giảng lại kiến thức, CẤM gợi ý cách làm — trên trang không có thông tin đó.\n"
+        "- Danh sách link: CHỈ nói có mấy trang và là trang gì, KHÔNG đọc địa chỉ."
+    ),
 }
 
 
 def load_prompt() -> tuple[str, str]:
     t = PROMPT_PATH.read_text(encoding="utf-8")
     return t, hashlib.sha1(t.encode()).hexdigest()[:12]
-
-
-def slide_type(page: ParsedPage) -> str:
-    return "section_divider" if is_section_divider(page) else "content"
 
 
 # ------------------------------------------------------------------ dựng input
@@ -92,9 +94,12 @@ def render_prompt(template: str, doc: ParsedDocument, page: ParsedPage, stype: s
     blocks = page_blocks(page)
     # Ghi rõ khối nào là ẢNH: ảnh người đã sửa mô tả mang provenance=manual, nhìn provenance
     # không còn phân biệt được với chữ trên slide -> LLM lại đem mô tả ảnh ra đọc.
-    imgs = {b.id for b in page.blocks if isinstance(b, ParsedImage)}
+    # Khối link cũng ghi rõ: không biết thì LLM đọc "nhatot chấm com gạch chéo…" ra miệng.
+    label = {b.id: "ẢNH" for b in page.blocks if isinstance(b, ParsedImage)}
+    label |= {b.id: "DANH SÁCH LINK — không đọc địa chỉ" for b in page.paragraphs
+              if b.role == "links"}
     btxt = "\n\n".join(
-        f"[{i}] ({'ẢNH' if i in imgs else 'chữ trên slide'}, provenance={p})\n{t}"
+        f"[{i}] ({label.get(i, 'chữ trên slide')}, provenance={p})\n{t}"
         for i, p, t in blocks) or "(trang không có chữ)"
 
     if previous:
@@ -207,7 +212,7 @@ def to_script(raw: dict, page: ParsedPage, stype: str, pron: Pronunciation,
 async def write_page(llm: LLM, sem: asyncio.Semaphore, template: str, prompt_hash: str,
                      doc: ParsedDocument, page: ParsedPage, previous: list[SlideScript],
                      pron: Pronunciation) -> SlideScript:
-    stype = slide_type(page)
+    stype = page.slide_type
     prompt = render_prompt(template, doc, page, stype, previous, pron)
     refs = block_info(page, pron)
     msgs = [{"role": "user", "content": prompt}]
@@ -289,6 +294,7 @@ async def run_deck(doc: ParsedDocument, pron: Pronunciation, *, model: str,
             want = only is None or page.page_no in only
             fresh = (old is not None and not force and old.page_hash == page.page_hash
                      and old.prompt_hash == prompt_hash and old.model == model
+                     and old.slide_type == page.slide_type
                      and not (dirty and only is None))
             if old is not None and old.edited_by == "nguoi":
                 # Người sửa tay -> giữ nguyên. Vẫn đếm lại + KIỂM, trượt thì chỉ gắn cờ để

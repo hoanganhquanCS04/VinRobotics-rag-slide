@@ -3,8 +3,17 @@
 Mọi lệnh chạy ở thư mục gốc repo, trong PowerShell, bằng Python của `.venv`.
 Luồng và cấu trúc dữ liệu: [01-hien-trang.md](./01-hien-trang.md).
 
+Cài môi trường lần đầu (Python 3.12, bản thư viện ghim trong `requirements.txt`):
+
 ```powershell
-$env:PYTHONIOENCODING = "utf-8"      # chạy 1 lần mỗi terminal — không có thì lỗi in chữ Việt
+uv venv --python 3.12
+uv pip install -r requirements.txt
+```
+
+Mỗi terminal mới:
+
+```powershell
+$env:PYTHONIOENCODING = "utf-8"      # không có thì lỗi in chữ Việt
 ```
 
 `.env` cần có `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `VLM_MODEL`, `LLM_MODEL`.

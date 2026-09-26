@@ -28,6 +28,7 @@ from pydantic import (
     BaseModel,
     Field,
     ValidationError,
+    computed_field,
     field_validator,
     model_serializer,
     model_validator,
@@ -37,6 +38,18 @@ from pydantic import (
 URL_LINE = re.compile(r"(?:https?://|www\.)\S+")
 # Số trang in trên slide — "11 / 40" · "11 of 40". Nhóm 1 = số trang.
 PAGE_NUMBER = re.compile(r"\s*(\d+)\s*(?:/|of)\s*\d+\s*")
+
+# slide_type — luật, không gọi model. Đo trên 3_datavisualization, tách bạch không vùng xám:
+#   phân mục  tiêu đề cx=0.50 cy=0.47 (7 trang)   ·   nội dung  cx=0.20 cy=0.11
+DIVIDER_MIN_CY = 0.30
+DIVIDER_CX_RANGE = (0.35, 0.65)
+EXERCISE_WORDS = re.compile(r"bài tập|yêu cầu|deadline", re.I)
+
+
+def header_differs(header: str, title: str) -> bool:
+    """Thanh header và tiêu đề trang nói hai chuyện khác nhau (khớp lỏng 10 ký tự đầu)."""
+    a, b = header.lower().strip(), title.lower().strip()
+    return a[:10] not in b and b[:10] not in a
 
 Point = tuple[float, float]
 
@@ -223,7 +236,7 @@ class Furniture(_Base):
 
 class ParsedPage(_Base):
     _ORDER: ClassVar[tuple[str, ...]] = (
-        "page_no", "title", "section_id", "page_hash", "blocks", "furniture",
+        "page_no", "title", "slide_type", "section_id", "page_hash", "blocks", "furniture",
     )
 
     page_no: int
@@ -248,6 +261,28 @@ class ParsedPage(_Base):
     @property
     def running_header(self) -> str | None:
         return self.furniture.header
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def slide_type(self) -> Literal["section_divider", "exercise", "content"]:
+        """Luật trên chính trang này — tính lại mỗi lần nạp, ghi ra JSON để đọc.
+
+        section_divider  đúng 1 mẩu chữ, là tiêu đề, nằm GIỮA trang -> S4 chỉ nói câu chuyển
+        exercise         header LỆCH tiêu đề + có "bài tập|yêu cầu|deadline"
+                         -> robot ĐỌC yêu cầu, không giảng. Cờ header_title_mismatch hoá
+                            ra là tín hiệu phân loại chứ không phải lỗi (CLAUDE.md §5).
+        content          còn lại
+        """
+        paras = self.paragraphs
+        if len(paras) == 1 and paras[0].role == "title":
+            cx, cy = paras[0].center
+            if cy >= DIVIDER_MIN_CY and DIVIDER_CX_RANGE[0] <= cx <= DIVIDER_CX_RANGE[1]:
+                return "section_divider"
+        hdr, title = self.furniture.header, self.title
+        if hdr and title and header_differs(hdr, title):
+            if EXERCISE_WORDS.search(" ".join(p.content for p in paras)):
+                return "exercise"
+        return "content"
 
     @property
     def is_text_starved(self) -> bool:

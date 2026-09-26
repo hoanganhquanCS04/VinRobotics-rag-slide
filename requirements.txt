@@ -1,0 +1,22 @@
+# Python 3.12 · ghim đúng bản đang chạy được trong .venv
+#   uv venv --python 3.12 && uv pip install -r requirements.txt
+#   (hoặc: python -m venv .venv && .venv\Scripts\pip install -r requirements.txt)
+#
+# KHÔNG có model local nào: VLM, embedding, LLM đều qua API (.env).
+
+# S0 parse — layout + TableFormer chạy local, VLM mô tả ảnh qua API
+docling==2.129.0
+docling-core==2.97.2
+python-pptx==1.0.2        # docling đọc .pptx
+pypdfium2==5.13.0         # render trang PDF ra ảnh (scripts/show_page.py)
+pillow==12.3.0            # vẽ khung bbox để soi mắt
+
+# Schema + gọi API
+pydantic==2.13.5
+httpx==0.28.1             # KHÔNG urllib: Cloudflare chặn User-Agent Python-urllib
+python-dotenv==1.2.3      # đọc .env: OPENAI_API_KEY, OPENAI_BASE_URL, VLM_MODEL, LLM_MODEL
+
+# S5 KB — vector + BM25
+numpy==2.5.3
+rank-bm25==0.2.2
+tiktoken==0.14.0          # đếm token đúng tokenizer của text-embedding-3-*

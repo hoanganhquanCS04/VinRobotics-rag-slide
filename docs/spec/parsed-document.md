@@ -30,7 +30,7 @@ ParsedDocument
 ├── sections[]  {id, title, pages: [đầu, cuối], source, confidence}
 ├── flags[]     {kind, severity, page_no, block_id, detail}
 └── pages[]
-     ├── page_no · title · section_id · page_hash
+     ├── page_no · title · slide_type · section_id · page_hash
      ├── blocks[]        NỘI DUNG, theo thứ tự đọc
      │    └── id · kind · role · content · polygon · provenance  (+ trường riêng từng loại)
      └── furniture       {header, footer[]}  (+ page_number khi LỆCH page_no)
@@ -80,6 +80,17 @@ Trường riêng theo `kind`:
 | `page_number` | số in trên slide (`"11 / 40"`) — **chỉ ghi khi LỆCH `page_no`** (slide ẩn/xoá/đánh số sai) → cờ `page_label_mismatch` |
 
 Deck `.pptx` chưa có furniture: docling không gắn nhãn header/footer cho pptx.
+
+**`slide_type`** — luật trên chính trang đó, không gọi model. Tính lại mỗi lần nạp, ghi ra
+JSON để đọc. S4 viết theo loại trang, KB lọc trang phân mục:
+
+| `slide_type` | luật | robot làm gì |
+|---|---|---|
+| `section_divider` | đúng 1 mẩu chữ, là tiêu đề, tâm giữa trang (cy ≥ 0.30, cx ∈ [0.35, 0.65]) | 1–2 câu chuyển chương |
+| `exercise` | header LỆCH tiêu đề + có "bài tập \| yêu cầu \| deadline" | ĐỌC yêu cầu, không giảng |
+| `content` | còn lại | giảng |
+
+`title` (trang bìa) và `agenda` (mục lục) chưa làm — 2/40 trang, lợi ích nhỏ.
 
 **Ghi JSON gọn:** trường rỗng (`null` / `[]` / `{}`) không ghi — trừ `content`, để nhìn là
 thấy block nào không có nội dung. Nạp lại thì trường vắng lấy giá trị mặc định.
@@ -194,8 +205,8 @@ Luật dễ quên:
 
 | `kind` | nghĩa |
 |---|---|
-| `header_title_mismatch` | header nói một đằng, tiêu đề trang một nẻo — cũng là tín hiệu trang bài tập |
-| `empty_page` | không chữ, không mô tả ảnh → vào KB gần như rỗng (7 trang phân mục bắn oan — CLAUDE.md §5) |
+| `header_title_mismatch` | header nói một đằng, tiêu đề trang một nẻo. KHÔNG bắn ở trang `exercise` — ở đó lệch là tín hiệu phân loại |
+| `empty_page` | không chữ, không mô tả ảnh → vào KB gần như rỗng. KHÔNG bắn ở trang `section_divider` — rỗng là đúng thiết kế |
 | `image_not_described` | ảnh có `why_empty` là `not_described` / `api_error` |
 | `page_label_mismatch` | số trang in trên slide lệch số trang thật |
 | `no_sections` | không dựng được chương (deck không có thanh header) |
@@ -216,7 +227,7 @@ Luật dễ quên:
 ```
 
 - ② tự áp file vá tay `data\patches\<ten>.json` nếu có. Áp lại bao nhiêu lần cũng như một lần.
-- ② thoát mã `1` khi có cờ mức `error` — vẫn ghi file, mã lỗi để CI bắt.
+- ② thoát mã `1` khi có cờ mức `error` — vẫn ghi file, mã lỗi để CI bắt. Hai deck hiện đều ra `0`.
 - File parse theo định dạng cũ không nạp được → chạy lại ② từ `out\parse_api\` (miễn phí).
 
 ```
@@ -238,7 +249,8 @@ docling .json ─► from_docling.py   theo body.children → thứ tự đọc;
 | ảnh có `content` (vào KB) | 27 — VLM tả 28, 1 cái là `decorative` | 6 |
 | trang có header | 32 | 0 — pptx không có nhãn |
 | chương | 7, chương đầu p9–15, khớp mục lục 7/7 | 0 |
-| cờ | 7 `empty_page` + 3 `header_title_mismatch` | 1 `no_sections` |
+| `slide_type` | 30 content + 7 section_divider + 3 exercise (p38–40) | 10 content |
+| cờ | **0** (trước khi có `slide_type`: 7 `empty_page` oan + 3 `header_title_mismatch`) | 1 `no_sections` |
 | kích thước file | 74 KB (định dạng cũ: 362 KB) | 21 KB (cũ: 68 KB) |
 
 Ca âm tính — `Chương1.pdf`: chỉ 1/12 trang có thanh header → trượt luật phủ 60% →

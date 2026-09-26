@@ -47,7 +47,7 @@ class Sentence(BaseModel):
 class SlideScript(BaseModel):
     page_no: int
     page_hash: str
-    slide_type: Literal["section_divider", "content"]
+    slide_type: Literal["section_divider", "exercise", "content"]
     section_id: str | None = None
     sentences: list[Sentence] = Field(default_factory=list)
     flags: list[str] = Field(default_factory=list)

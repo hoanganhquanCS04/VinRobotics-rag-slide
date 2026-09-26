@@ -83,8 +83,9 @@ mức "mô tả slide".
 ✅ S5   chunk + vector + tìm      src/kb/          52 chunk, hybrid dense+BM25
 🚫 S1   BỎ — gộp vào S0                            xem §5
 🚫 S3   BỎ ở v0 — align vào chính mình thì vô nghĩa
-⬜ S2   slide_type + time_budget  luật, chưa code
-🟡 S4   kịch bản                  src/scenario/, gpt-5-mini — mới chạy thử 4 trang
+✅ S2a  slide_type               luật, ParsedPage.slide_type — divider · exercise · content
+⬜ S2b  time_budget              luật, chưa code
+🟡 S4   kịch bản                  src/scenario/, gpt-5-mini — đủ 2 deck, nhịp chưa đạt gate
 ⬜ S6b  TTS + pronunciation.json  chưa có dòng nào
 ⬜ S7   người duyệt phần bị flag  chưa có dòng nào
 ```
@@ -195,24 +196,24 @@ này không nhồi.
 title            trang số 1                                           ⬜ chưa code
 agenda           có mẩu chữ mở đầu bằng "1 " và >= 3 dòng             ⬜ chưa code
 section_divider  đúng 1 tiêu đề, tâm giữa trang                       ✅ ĐÃ CÓ
-                 (cy >= 0.30, cx trong [0.35, 0.65])                     src/kb/chunk.py
-exercise         title LỆCH header chạy + "bài tập|yêu cầu|deadline"   ⬜ chưa code
+                 (cy >= 0.30, cx trong [0.35, 0.65])
+exercise         title LỆCH header chạy + "bài tập|yêu cầu|deadline"   ✅ ĐÃ CÓ
 content          còn lại                                              ✅ ĐÃ CÓ
+                 -> ParsedPage.slide_type (src/parsing/models.py)
 ```
 
-**`section_divider` đã chạy rồi**, nằm ở `KBChunk.content_type` (7/7 đúng). S4 đọc thẳng
-field đó là đủ để KHÔNG bịa ở trang ngăn chương — **không chờ gì cả**.
+**Luật nằm ở MỘT chỗ: `ParsedPage.slide_type`** (`computed_field` — tính lại mỗi lần nạp,
+ghi ra JSON để đọc). `flags.py`, `kb/chunk.py`, S4 đều chỉ đọc field đó. Đo trên
+`3_datavisualization`: 7 section_divider + 3 exercise (p38–40), đúng hết.
 
-Hai việc còn lại, đều là dọn dẹp, KHÔNG chặn S4:
+- `flags.py` không bắn `empty_page` ở trang phân mục, không bắn `header_title_mismatch` ở
+  trang bài tập → 10 cờ oan về 0, CLI thoát mã 0, CI hết đỏ giả.
+- KB coi trang bài tập là `content` (có nội dung thật, phải tìm được).
+- S4 viết lại trang khi `slide_type` đổi. Trang `exercise`: 2–4 câu, ĐỌC yêu cầu, không giảng.
+- `title` và `agenda` chỉ 2 trang trong 40, lợi ích nhỏ — chưa làm.
 
-1. **Luật đang nằm ở `src/kb/`, mà `src/parsing/flags.py` ở phía trên nên không biết**
-   → 7 cờ `[error] empty_page` vẫn bắn oan, CLI thoát mã 1, CI đỏ giả. Chuyển luật lên
-   `src/parsing/` rồi `chunk.py` chỉ đọc field.
-2. **Thiếu `exercise`** — trang bài tập thì robot ĐỌC yêu cầu, không giảng. `title` và
-   `agenda` chỉ 2 trang trong 40, lợi ích nhỏ.
-
-Luật `exercise` dùng lại chính cờ `header_title_mismatch` của S0 — cái tưởng là cảnh báo
-lỗi hoá ra là tín hiệu phân loại.
+Luật `exercise` dùng lại chính tín hiệu header lệch tiêu đề — cái tưởng là cảnh báo lỗi
+hoá ra là tín hiệu phân loại.
 
 > Nhược điểm phải nhận: luật fit trên MỘT deck, deck khác bố cục khác là gãy. Nhưng gãy
 > thì nhìn bảng phân loại là thấy ngay, còn LLM gán sai thì im lặng. §2 NT2 ưu tiên
@@ -597,7 +598,7 @@ XML · S3 Alignment suy biến nên bỏ qua · độ sâu trả lời giới h�
 embedding qua API **chỉ có dense, mất sparse** của `bge-m3` → phải bù bằng BM25 riêng,
 và tốn 719ms/câu hỏi thay vì 182ms (đo thật, xem [embedding.md §2](docs/spec/embedding.md))
 
-**Chưa có:** S6b TTS · S7 duyệt · toàn bộ runtime R1–R7 · S4 mới chạy thử 4/40 trang
+**Chưa có:** S6b TTS · S7 duyệt · toàn bộ runtime R1–R7 · S2 `time_budget` · S6a `deck_map.txt`
 
 **Đang chờ bên ngoài:** quyền `rerank` trên API key (hiện 403 `capability_not_allowed`).
 Không có nó thì R2 chạy được nhưng **không có confidence gate calibrate được** — xem §6.

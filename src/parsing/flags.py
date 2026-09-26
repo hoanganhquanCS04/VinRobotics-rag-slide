@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 
-from parsing.models import Flag, ParsedDocument
+from parsing.models import Flag, ParsedDocument, header_differs
 
 log = logging.getLogger(__name__)
 
@@ -24,14 +24,16 @@ def _header_title_mismatch(doc: ParsedDocument) -> list[Flag]:
 
     Thường là lỗi thật của bộ slide (tác giả quên đổi thanh header khi sang mục
     mới). §5 S2: lỗi của bộ slide thì BÁO, KHÔNG tự sửa.
+
+    Trang `exercise` KHÔNG bắn: lệch header ở đó là tín hiệu đã dùng để phân loại, bắn nữa
+    là cờ oan (kéo tụt Flag precision §11).
     """
     out: list[Flag] = []
     for page in doc.pages:
         hdr, title = page.running_header, page.title
-        if not hdr or not title:
+        if not hdr or not title or page.slide_type == "exercise":
             continue
-        a, b = hdr.lower().strip(), title.lower().strip()
-        if a[:10] not in b and b[:10] not in a:
+        if header_differs(hdr, title):
             out.append(
                 Flag(
                     kind="header_title_mismatch",
@@ -44,10 +46,14 @@ def _header_title_mismatch(doc: ParsedDocument) -> list[Flag]:
 
 
 def _empty_page(doc: ParsedDocument) -> list[Flag]:
-    """Không chữ (ngoài tiêu đề) mà cũng không mô tả ảnh nào -> vào KB gần như rỗng."""
+    """Không chữ (ngoài tiêu đề) mà cũng không mô tả ảnh nào -> vào KB gần như rỗng.
+
+    Trang phân mục rỗng là ĐÚNG thiết kế — không bắn (trước đây bắn oan 7 cờ error,
+    CLI thoát mã 1, CI đỏ giả).
+    """
     out: list[Flag] = []
     for page in doc.pages:
-        if not page.is_text_starved:
+        if not page.is_text_starved or page.slide_type == "section_divider":
             continue
         if any(im.content for im in page.images):
             continue

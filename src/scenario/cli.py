@@ -23,7 +23,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from parsing.models import ParsedDocument
-from scenario.generate import DEFAULT_MODEL, load_prompt, render_prompt, run_deck, slide_type
+from scenario.generate import DEFAULT_MODEL, load_prompt, render_prompt, run_deck
 from scenario.models import Scenario
 from scenario.syllables import Pronunciation
 
@@ -163,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
             prev = [s for s in (old.slides if old else [])
                     if s.section_id == p.section_id and s.page_no < pg]
             log.info("=" * 78)
-            log.info(render_prompt(template, doc, p, slide_type(p), prev, pron))
+            log.info(render_prompt(template, doc, p, p.slide_type, prev, pron))
         return 0
 
     existing = {s.page_no: s for s in old.slides} if old else {}

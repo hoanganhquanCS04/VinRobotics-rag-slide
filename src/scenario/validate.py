@@ -17,7 +17,7 @@ from scenario.models import SlideScript
 from scenario.syllables import Pronunciation
 
 MAX_SYLLABLES = 30                      # R7 chỉ ngắt được ở ranh giới câu
-MAX_SENTENCES = {"section_divider": 2, "content": 6}   # thay cho time_budget đã bỏ
+MAX_SENTENCES = {"section_divider": 2, "exercise": 4, "content": 6}   # thay time_budget đã bỏ
 DELIVERY_RANGE = (0.10, 0.25)           # NT4 — 10% là sàn cứng
 STDEV_MIN = 6.0
 
@@ -41,6 +41,11 @@ NUM_WORD = r"(?:\d+|không|một|hai|ba|bốn|năm|sáu|bảy|tám|chín|mười
 RANGE = re.compile(rf"từ {NUM_WORD}\b.{{0,20}}?đến", re.I)
 # Đọc code thành tiếng: ngoặc, dấu bằng, gạch dưới, dạng a.b (nhưng cho phép 1.0)
 CODE = re.compile(r"[()=\[\]{}_]|[A-Za-z]\.[A-Za-z]")
+# Đọc URL thành tiếng — cả dạng viết lẫn dạng đã phiên âm ("nhatot chấm com").
+# Dạng "abc.com" đã bị CODE bắt; đây bắt thêm phần CODE không thấy.
+URL_SPOKEN = re.compile(
+    r"https?\s*:|www\b|chấm\s+(?:com|vn|net|org|edu)\b|gạch chéo|\b(?:com|net|org)\s+chấm\s+vn\b",
+    re.I)
 
 
 @dataclass
@@ -83,6 +88,9 @@ def check(ss: SlideScript, blocks: dict[str, BlockInfo], pron: Pronunciation,
         if CODE.search(t):
             out.append(Issue("code_read_aloud", "fix",
                              f"câu {i} đọc mã nguồn (có ngoặc/dấu bằng/dạng a.b): \"{t}\""))
+        if URL_SPOKEN.search(t):
+            out.append(Issue("url_read_aloud", "fix",
+                             f"câu {i} đọc địa chỉ web thành tiếng — chỉ nói là trang gì: \"{t}\""))
         if META.search(t):
             out.append(Issue("meta_talk", "fix",
                              f"câu {i} nói VỀ SLIDE thay vì về chủ đề: \"{t}\""))
