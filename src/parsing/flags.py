@@ -13,7 +13,6 @@ này bắn ra 0 flag.
 from __future__ import annotations
 
 import logging
-import re
 
 from parsing.models import Flag, ParsedDocument
 
@@ -50,7 +49,7 @@ def _empty_page(doc: ParsedDocument) -> list[Flag]:
     for page in doc.pages:
         if not page.is_text_starved:
             continue
-        if any(im.was_described for im in page.images):
+        if any(im.content for im in page.images):
             continue
         out.append(
             Flag(
@@ -77,7 +76,7 @@ def _image_not_described(doc: ParsedDocument) -> list[Flag]:
                         kind="image_not_described",
                         page_no=page.page_no,
                         block_id=im.id,
-                        detail=f"chiem {im.bbox.area_ratio:.1%} trang, ly do={im.skip_reason}",
+                        detail=f"chiem {im.area:.1%} trang, ly do={im.why_empty}",
                         severity="error",
                     )
                 )
@@ -85,14 +84,14 @@ def _image_not_described(doc: ParsedDocument) -> list[Flag]:
 
 
 def _page_label_mismatch(doc: ParsedDocument) -> list[Flag]:
-    """Số trang IN TRÊN GIẤY lệch số trang docling gán -> parse sót/lệch trang."""
+    """Số trang IN TRÊN GIẤY lệch số trang docling gán -> parse sót/lệch trang.
+
+    `furniture.page_number` chỉ được ghi khi đã lệch (from_docling), nên có là bắn.
+    """
     out: list[Flag] = []
     for page in doc.pages:
-        label = page.page_label
-        if not label:
-            continue
-        m = re.match(r"\s*(\d+)", label)
-        if m and int(m.group(1)) != page.page_no:
+        label = page.furniture.page_number
+        if label:
             out.append(
                 Flag(
                     kind="page_label_mismatch",

@@ -409,8 +409,8 @@ data/patches/<ten>.json                   nội dung gõ tay cho trang parser b�
 data/eval/queries.json                    câu hỏi có nhãn để đo retrieval
 out/parse_api/<ten>.{md,json}             docling thô  (scripts/parse_api.py, .pdf hoặc .pptx)
 .env  VLM_MODEL · LLM_MODEL               tên model dùng — sửa ở đây, KHÔNG sửa trong code
-out/parsed/<doc_id>.json                  ParsedDocument (src/parsing/cli.py)
-out/parsed/<doc_id>.compact.json          bản GỌN để người đọc, tự ghi kèm — pipeline KHÔNG đọc
+out/parsed/<doc_id>.json                  ParsedDocument (src/parsing/cli.py) — MỘT định dạng gọn,
+                                          vừa để người đọc vừa để pipeline chạy
 out/kb/<doc_id>.chunks.json               KBChunk[]     (src/kb/cli.py)
 out/kb/<doc_id>__<model_id>.vectors.npy   ma trận vector + .vectors.json (thứ tự hàng)
 out/kb/.embed_cache/<model>/<sha1>.npy    cache theo hash nội dung

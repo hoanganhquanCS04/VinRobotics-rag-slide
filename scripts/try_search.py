@@ -48,8 +48,7 @@ def main() -> None:
     args = ap.parse_args()
 
     s = Searcher(f"out/kb/{args.doc}.chunks.json")
-    doc = ParsedDocument.model_validate_json(
-        Path(f"out/parsed/{args.doc}.json").read_text(encoding="utf-8"))
+    doc = ParsedDocument.load(f"out/parsed/{args.doc}.json")
     mode = "sparse" if args.bm25 else "hybrid"
 
     if args.query:

@@ -22,7 +22,7 @@ import logging
 from functools import lru_cache
 
 from kb.models import ChunkSet, KBChunk
-from parsing.models import ParsedDocument, ParsedImage, ParsedPage, ParsedParagraph
+from parsing.models import ParsedDocument, ParsedPage
 
 log = logging.getLogger(__name__)
 
@@ -77,7 +77,7 @@ def is_section_divider(page: ParsedPage) -> bool:
     title = page.paragraphs[0]
     if title.role != "title":
         return False
-    cx, cy = title.bbox.center
+    cx, cy = title.center
     return cy >= DIVIDER_MIN_CY and DIVIDER_CX_RANGE[0] <= cx <= DIVIDER_CX_RANGE[1]
 
 

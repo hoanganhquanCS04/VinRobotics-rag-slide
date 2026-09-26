@@ -4,9 +4,9 @@ Năm việc:
 
   1. Đi theo `body.children` -> ĐÚNG THỨ TỰ ĐỌC. Mảng `texts[]` trong file KHÔNG
      theo thứ tự này, đọc tuần tự mảng là loạn.
-  2. Đổi toạ độ: gốc DƯỚI-TRÁI của docling -> gốc TRÊN-TRÁI, chuẩn hoá [0,1].
-  3. Tách `body` với `furniture` ra hai rổ riêng (KHÔNG vứt furniture — thanh
-     header chạy ở đỉnh trang là nguồn duy nhất dựng được chương).
+  2. Đổi toạ độ: gốc DƯỚI-TRÁI của docling -> gốc TRÊN-TRÁI, chuẩn hoá [0,1], ra `polygon`.
+  3. Tách furniture (header/footer/số trang) khỏi nội dung, gom thành `page.furniture`.
+     KHÔNG vứt — thanh header chạy là nguồn duy nhất dựng được chương.
   4. Gắn `provenance` cho từng mẩu: chữ -> text_layer, mô tả ảnh -> vlm.
   5. Tính `page_hash` để incremental build biết trang nào đổi.
 
@@ -28,8 +28,7 @@ from typing import Any, Iterator
 from parsing.models import (
     PAGE_NUMBER,
     AnyBlock,
-    BBox,
-    Layer,
+    Furniture,
     ParsedDocument,
     ParsedImage,
     ParsedPage,
@@ -38,36 +37,22 @@ from parsing.models import (
     ParserInfo,
     Provenance,
     SourceInfo,
+    polygon_from_box,
 )
 
 log = logging.getLogger(__name__)
 
-# docling label -> vai trò trong ParsedParagraph
+Box = tuple[float, float, float, float]   # (trái, trên, phải, dưới), [0,1], gốc trên-trái
+
+# docling label -> role của ParsedParagraph
 _ROLE = {
     "section_header": "title",
     "title": "title",
     "caption": "caption",
-    "page_header": "header",
-    "page_footer": "footer",
 }
 _FURNITURE_LABELS = {"page_header", "page_footer"}
 _DECORATIVE_CLASSES = {"logo", "icon", "signature", "stamp"}
 _DECORATIVE_CONF = 0.9
-
-
-def _refine_role(b: ParsedParagraph) -> None:
-    """Hai vai trò docling không gán, suy bằng luật trên chữ.
-
-    links        >= nửa số dòng là URL (p38 của 3_datavisualization: 8/8 dòng)
-    page_number  mẩu furniture chỉ gồm "11 / 40" — docling gộp nó vào page_footer
-    """
-    if b.layer is Layer.FURNITURE:
-        if PAGE_NUMBER.fullmatch(b.text):
-            b.role = "page_number"
-        return
-    if b.role in ("body", "list") and b.lines:
-        if 2 * len(b.urls) >= len(b.lines):
-            b.role = "links"
 
 
 def _norm(s: str | None) -> str:
@@ -78,7 +63,7 @@ def _clamp(v: float) -> float:
     return 0.0 if v < 0.0 else (1.0 if v > 1.0 else v)
 
 
-def _bbox(prov: dict[str, Any], page_w: float, page_h: float, *, is_pptx: bool = False) -> BBox:
+def _box(prov: dict[str, Any], page_w: float, page_h: float, *, is_pptx: bool = False) -> Box:
     """docling BOTTOMLEFT (t > b, đo từ đáy lên) -> TOPLEFT chuẩn hoá.
 
     NGOẠI LỆ .pptx: backend pptx của docling gắn nhãn `BOTTOMLEFT` nhưng số thật đo từ
@@ -95,12 +80,8 @@ def _bbox(prov: dict[str, Any], page_w: float, page_h: float, *, is_pptx: bool =
         top, bottom = b["t"], b["b"]
     if top > bottom:                      # phòng trường hợp dữ liệu lật ngược
         top, bottom = bottom, top
-    return BBox(
-        l=_clamp(b["l"] / page_w),
-        t=_clamp(top / page_h),
-        r=_clamp(b["r"] / page_w),
-        b=_clamp(bottom / page_h),
-    )
+    return (_clamp(b["l"] / page_w), _clamp(top / page_h),
+            _clamp(b["r"] / page_w), _clamp(bottom / page_h))
 
 
 def _resolve(doc: dict[str, Any], ref: str) -> dict[str, Any] | None:
@@ -137,79 +118,69 @@ def _page_no(item: dict[str, Any]) -> int | None:
     return prov[0]["page_no"] if prov else None
 
 
-def _is_decorative(desc_text: str, classification: list[tuple[str, float]]) -> bool:
+def _is_decorative(desc_text: str, item: dict[str, Any]) -> bool:
     if desc_text.upper().rstrip(".") == "DECORATIVE":
         return True
-    if classification:
-        name, conf = classification[0]
-        return name in _DECORATIVE_CLASSES and conf >= _DECORATIVE_CONF
+    preds = ((item.get("meta") or {}).get("classification") or {}).get("predictions") or []
+    if preds:
+        top = preds[0]
+        return top["class_name"] in _DECORATIVE_CLASSES and float(top["confidence"]) >= _DECORATIVE_CONF
     return False
 
 
-def _make_image(
-    item: dict[str, Any], bid: str, pg: int, box: BBox, order: int, area_threshold: float
-) -> ParsedImage:
-    meta = item.get("meta") or {}
-    desc = meta.get("description") or {}
-    text = _norm(desc.get("text"))
-    cls_raw = (meta.get("classification") or {}).get("predictions") or []
-    classification = [(c["class_name"], round(float(c["confidence"]), 3)) for c in cls_raw[:3]]
-
-    decorative = bool(text) and _is_decorative(text, classification)
+def _make_image(item: dict[str, Any], bid: str, box: Box, area_threshold: float) -> ParsedImage:
+    text = _norm(((item.get("meta") or {}).get("description") or {}).get("text"))
+    decorative = bool(text) and _is_decorative(text, item)
+    im = ParsedImage(id=bid, content=None if decorative else (text or None),
+                     polygon=polygon_from_box(*box), provenance=Provenance.VLM)
     if decorative:
-        skip_reason = "decorative"
-    elif text:
-        skip_reason = None
-    elif box.area_ratio < area_threshold:
-        skip_reason = "area_below_threshold"
-    else:
-        skip_reason = "not_described"
-
-    return ParsedImage(
-        id=bid,
-        page_no=pg,
-        bbox=box,
-        layer=Layer.BODY,
-        reading_order=order,
-        provenance=Provenance.VLM,
-        description=text or None,
-        described_by=desc.get("created_by") or None,
-        skip_reason=skip_reason,
-        is_decorative=decorative,
-        classification=classification,
-    )
+        im.why_empty = "decorative"
+    elif not text:
+        im.why_empty = "area_below_threshold" if im.area < area_threshold else "not_described"
+    return im
 
 
-def _make_table(
-    item: dict[str, Any], bid: str, pg: int, box: BBox, order: int, text_prov: Provenance
-) -> ParsedTable:
-    data = item.get("data") or {}
-    grid = data.get("grid") or []
-    cells = [[_norm(c.get("text")) for c in row] for row in grid]
-    n_rows = data.get("num_rows", len(cells))
-    n_cols = data.get("num_cols", len(cells[0]) if cells else 0)
+def _make_table(item: dict[str, Any], bid: str, box: Box, text_prov: Provenance) -> ParsedTable:
+    grid = (item.get("data") or {}).get("grid") or []
     return ParsedTable(
-        id=bid,
-        page_no=pg,
-        bbox=box,
-        layer=Layer.BODY,
-        reading_order=order,
-        provenance=text_prov,                 # chữ trong ô: từ text layer
-        structure_provenance=Provenance.VLM,  # lưới: do TableFormer dựng
-        n_rows=n_rows,
-        n_cols=n_cols,
-        cells=cells,
+        id=bid, polygon=polygon_from_box(*box), provenance=text_prov,   # chữ trong ô: text layer
+        cells=[[_norm(c.get("text")) for c in row] for row in grid],
     )
 
 
-def _page_hash(page: ParsedPage) -> str:
-    """Hash nội dung + vị trí. Đổi chữ HOẶC đổi bố cục đều ra hash mới."""
-    h = hashlib.sha256()
-    for b in list(page.blocks) + list(page.furniture):
-        bb = b.bbox
-        h.update(f"{b.kind}|{bb.l:.4f},{bb.t:.4f},{bb.r:.4f},{bb.b:.4f}|".encode())
-        h.update((b.content or "").encode("utf-8"))
-    return h.hexdigest()[:16]
+def _vlm_model(raw: dict[str, Any]) -> str | None:
+    """Model ĐÃ mô tả ảnh, đọc từ chính output docling (`created_by` trên từng ảnh)."""
+    for p in raw.get("pictures") or []:
+        by = (((p.get("meta") or {}).get("description")) or {}).get("created_by")
+        if by:
+            return by
+    return None
+
+
+def _furniture(items: list[tuple[str, str, float]], page_no: int) -> Furniture:
+    """(nhãn docling, chữ, tâm y) -> Furniture.
+
+    header       mẩu `page_header` ĐẦU TIÊN; không có nhãn thì mẩu đầu tiên sát đỉnh (y < 0.15).
+                 Chỉ lấy MỘT — gộp thêm mẩu khác vào là tên chương lệch giữa các trang, luật
+                 dựng chương thấy "cắt rời" và trả 0 chương.
+    page_number  "11 / 40" — docling gộp nó vào page_footer. CHỈ giữ khi LỆCH page_no.
+    footer       mọi chữ lặp còn lại (tác giả, tên môn…).
+    """
+    items = [x for x in items if x[1]]
+    labeled = [x for x in items if x[0] == "page_header"]
+    top = [x for x in items if x[0] != "page_footer" and x[2] < 0.15]
+    head = (labeled or top or [None])[0]
+
+    furn = Furniture(header=head[1] if head else None)
+    for x in items:
+        if x is head:
+            continue
+        if m := PAGE_NUMBER.fullmatch(x[1]):
+            if int(m.group(1)) != page_no:
+                furn.page_number = x[1].strip()
+        else:
+            furn.footer.append(x[1])
+    return furn
 
 
 def slugify_doc_id(stem: str) -> str:
@@ -250,13 +221,14 @@ def from_docling_json(
     is_pptx = "presentationml" in ((raw.get("origin") or {}).get("mimetype") or "")
 
     sizes = {int(k): (v["size"]["width"], v["size"]["height"]) for k, v in raw["pages"].items()}
-    pages = {no: ParsedPage(page_no=no, size_pt=wh) for no, wh in sorted(sizes.items())}
+    pages = {no: ParsedPage(page_no=no) for no in sorted(sizes)}
+    furniture: dict[int, list[tuple[str, str, float]]] = {no: [] for no in pages}
     counters: dict[int, int] = {no: 0 for no in pages}
 
-    def next_id(pg: int) -> tuple[str, int]:
-        order = counters[pg]
+    def next_id(pg: int) -> str:
+        n = counters[pg]
         counters[pg] += 1
-        return f"p{pg:03d}.b{order:02d}", order
+        return f"p{pg:03d}.b{n:02d}"
 
     seen: set[str] = set()
     roots = [raw.get("body") or {}, raw.get("furniture") or {}]
@@ -264,11 +236,11 @@ def from_docling_json(
     for root in roots:
         for item in _walk(raw, root, seen):
             sref = item.get("self_ref", "")
-            is_group = sref.startswith("#/groups/")
             label = item.get("label", "")
 
-            # group: lấy page/bbox từ các con
-            if is_group:
+            # Bó bullet -> MỘT ParsedParagraph role="list", các dòng ngăn bằng xuống dòng.
+            # Không tách block riêng cho từng dòng: dòng lẻ chỉ vài chữ, không trả lời được gì.
+            if sref.startswith("#/groups/"):
                 kids = [
                     k
                     for ref in item.get("children", [])
@@ -280,34 +252,18 @@ def from_docling_json(
                 pg = _page_no(kids[0])
                 if pg is None or pg not in pages:
                     continue
-                page_w, page_h = sizes[pg]
-                boxes = [_bbox(k["prov"][0], page_w, page_h, is_pptx=is_pptx) for k in kids]
-                box = BBox(
-                    l=min(x.l for x in boxes),
-                    t=min(x.t for x in boxes),
-                    r=max(x.r for x in boxes),
-                    b=max(x.b for x in boxes),
-                )
-                # Bó bullet -> MỘT ParsedParagraph role="list", các dòng ngăn
-                # bằng xuống dòng. Không tách class riêng cho từng dòng: bbox và
-                # marker của từng bullet không chỗ nào trong pipeline dùng tới.
+                boxes = [_box(k["prov"][0], *sizes[pg], is_pptx=is_pptx) for k in kids]
+                box = (min(x[0] for x in boxes), min(x[1] for x in boxes),
+                       max(x[2] for x in boxes), max(x[3] for x in boxes))
                 for k in kids:
                     seen.add(k.get("self_ref", ""))
-                lid, order = next_id(pg)
                 lines = [t for k in kids if (t := _norm(k.get("text")))]
-                pages[pg].blocks.append(
-                    ParsedParagraph(
-                        id=lid,
-                        page_no=pg,
-                        bbox=box,
-                        layer=Layer.BODY,
-                        reading_order=order,
-                        provenance=text_prov,
-                        text="\n".join(lines),
-                        text_raw="\n".join(k.get("orig", "") or "" for k in kids),
-                        role="list",
-                    )
-                )
+                if not lines:
+                    continue
+                pages[pg].blocks.append(ParsedParagraph(
+                    id=next_id(pg), role="list", content="\n".join(lines),
+                    polygon=polygon_from_box(*box), provenance=text_prov,
+                ))
                 continue
 
             prov = item.get("prov") or []
@@ -316,64 +272,49 @@ def from_docling_json(
             pg = prov[0]["page_no"]
             if pg not in pages:
                 continue
-            page_w, page_h = sizes[pg]
-            box = _bbox(prov[0], page_w, page_h, is_pptx=is_pptx)
-            bid, order = next_id(pg)
+            box = _box(prov[0], *sizes[pg], is_pptx=is_pptx)
 
-            layer = (
-                Layer.FURNITURE
-                if item.get("content_layer") == "furniture" or label in _FURNITURE_LABELS
-                else Layer.BODY
-            )
+            if item.get("content_layer") == "furniture" or label in _FURNITURE_LABELS:
+                furniture[pg].append((label, _norm(item.get("text")), (box[1] + box[3]) / 2))
+                continue
 
             block: AnyBlock
             if sref.startswith("#/pictures/"):
-                block = _make_image(item, bid, pg, box, order, picture_area_threshold)
+                block = _make_image(item, next_id(pg), box, picture_area_threshold)
             elif sref.startswith("#/tables/"):
-                block = _make_table(item, bid, pg, box, order, text_prov)
-            elif label == "list_item":
-                # bullet mồ côi (không nằm trong group nào) -> vẫn là role="list"
-                block = ParsedParagraph(
-                    id=bid, page_no=pg, bbox=box, layer=layer, reading_order=order,
-                    provenance=text_prov, text=_norm(item.get("text")),
-                    text_raw=item.get("orig", "") or "", role="list",
-                )
+                block = _make_table(item, next_id(pg), box, text_prov)
             else:
+                text = _norm(item.get("text"))
+                if not text:
+                    continue                 # bỏ TRƯỚC khi cấp id — không để lại lỗ trong dãy id
                 block = ParsedParagraph(
-                    id=bid, page_no=pg, bbox=box, layer=layer, reading_order=order,
-                    provenance=text_prov, text=_norm(item.get("text")),
-                    text_raw=item.get("orig", "") or "",
-                    role=_ROLE.get(label, "body"),  # type: ignore[arg-type]
+                    id=next_id(pg), content=text, polygon=polygon_from_box(*box),
+                    provenance=text_prov,
+                    # bullet mồ côi (không nằm trong group nào) vẫn là role="list"
+                    role="list" if label == "list_item" else _ROLE.get(label, "body"),  # type: ignore[arg-type]
                 )
-
-            (pages[pg].furniture if layer is Layer.FURNITURE else pages[pg].blocks).append(block)
+            pages[pg].blocks.append(block)
 
     for page in pages.values():
-        for b in list(page.blocks) + list(page.furniture):
-            if isinstance(b, ParsedParagraph):
-                _refine_role(b)
+        page.furniture = _furniture(furniture[page.page_no], page.page_no)
         page.title = next(
-            (
-                b.text
-                for b in page.blocks
-                if isinstance(b, ParsedParagraph) and b.role == "title" and b.text
-            ),
-            None,
+            (b.content for b in page.paragraphs if b.role == "title" and b.content), None
         )
-        page.page_hash = _page_hash(page)
+        page.page_hash = page.compute_hash()
 
+    # Model ĐÃ mô tả ảnh (ghi trong output docling) thắng model khai trong .env —
+    # và hash phải tính từ đúng model được ghi, không thì hai thứ lệch nhau.
+    vlm_model = _vlm_model(raw) or vlm_model
     doc = ParsedDocument(
         doc_id=doc_id or slugify_doc_id(path.stem),
         source=SourceInfo(
             path=source_pdf or raw.get("name", path.stem),
-            sha256=(raw.get("origin") or {}).get("binary_hash", "") and
-            str((raw.get("origin") or {}).get("binary_hash", "")),
-            n_pages=len(pages),
+            sha256=str((raw.get("origin") or {}).get("binary_hash", "")),
         ),
         parser=ParserInfo(
             docling_version=_docling_version(raw),
-            do_ocr=do_ocr,
             vlm_model=vlm_model,
+            do_ocr=do_ocr,
             picture_area_threshold=picture_area_threshold,
             options_hash=hashlib.sha256(
                 f"{do_ocr}|{vlm_model}|{picture_area_threshold}".encode()

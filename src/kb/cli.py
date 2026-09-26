@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import statistics
 import sys
@@ -81,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
     p = Path(args.parsed)
     if not p.exists():
         raise SystemExit(f"khong thay file: {p}")
-    doc = ParsedDocument.model_validate(json.loads(p.read_text(encoding="utf-8")))
+    doc = ParsedDocument.load(p)
     cs = chunk_document(doc, max_tokens=args.max_tokens)
 
     if args.page:

@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 
 from kb.chunk import is_section_divider
-from parsing.models import ParsedDocument, ParsedImage, ParsedPage, ParsedParagraph, ParsedTable
+from parsing.models import ParsedDocument, ParsedImage, ParsedPage, ParsedParagraph
 from scenario import validate
 from scenario.models import Grounding, Prosody, Sentence, SlideScript
 from scenario.syllables import Pronunciation, count
@@ -71,21 +71,8 @@ def slide_type(page: ParsedPage) -> str:
 
 def page_blocks(page: ParsedPage) -> list[tuple[str, str, str]]:
     """-> [(id, provenance, text)] — chỉ khối CÓ nội dung, để LLM trỏ ref vào."""
-    out = []
-    for b in page.blocks:
-        if isinstance(b, ParsedImage):
-            if not b.was_described:
-                continue
-            txt = b.description or ""
-        elif isinstance(b, ParsedParagraph):
-            txt = b.text
-        elif isinstance(b, ParsedTable):
-            txt = b.content or ""
-        else:
-            continue
-        if txt.strip():
-            out.append((b.id, b.provenance.value, txt.strip()))
-    return out
+    return [(b.id, b.provenance.value, b.content.strip())
+            for b in page.blocks if b.content and b.content.strip()]
 
 
 def block_info(page: ParsedPage, pron: Pronunciation) -> dict[str, validate.BlockInfo]:

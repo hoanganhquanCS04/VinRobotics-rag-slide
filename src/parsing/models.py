@@ -1,227 +1,202 @@
-"""Schema của ParsedDocument.
+"""Schema của ParsedDocument — MỘT định dạng, vừa để người đọc vừa để pipeline chạy.
 
-Ba tầng chứa nhau:
+    ParsedDocument --*--> ParsedPage --*--> Block
+                                              |-- ParsedParagraph   (chữ)
+                                              |-- ParsedTable       (bảng)
+                                              `-- ParsedImage       (ảnh)
 
-    ParsedDocument  --*-->  ParsedPage  --*-->  Block
-                                                  |-- ParsedParagraph   (chữ)
-                                                  |-- ParsedTable       (bảng)
-                                                  `-- ParsedImage       (ảnh)
+Mỗi block trả lời ba câu, loại nào cũng vậy:
 
-Mọi Block khai ba thứ: NỘI DUNG gì · nằm CHỖ NÀO · AI sinh ra (`provenance`).
-Field cuối là NT2 đóng thành kiểu dữ liệu: `text_layer` đúng 100%, `vlm` có thể bịa.
+    content      nói gì           chữ · mô tả VLM · markdown bảng
+    polygon      nằm đâu          4 góc, [0,1], gốc TRÊN-TRÁI
+    provenance   tin được không   text_layer đúng 100% · vlm có thể bịa (NT2)
+
+Ghi ra JSON: trường rỗng (None / [] / {}) KHÔNG ghi — trừ `content`, để nhìn là thấy
+block nào không có nội dung. Nạp lại thì trường vắng lấy giá trị mặc định.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from enum import Enum
-from typing import Annotated, Iterator, Literal
+from pathlib import Path
+from typing import Annotated, Any, ClassVar, Literal
 
-from pydantic import BaseModel, Field, computed_field
-
+from pydantic import (
+    BaseModel,
+    Field,
+    ValidationError,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 # Một dòng chỉ gồm một URL — "https://moso.vn/" · "www.abc.com/x"
 URL_LINE = re.compile(r"(?:https?://|www\.)\S+")
-# Số trang in trên slide — "11 / 40" · "11 of 40"
-PAGE_NUMBER = re.compile(r"\s*\d+\s*(?:/|of)\s*\d+\s*")
+# Số trang in trên slide — "11 / 40" · "11 of 40". Nhóm 1 = số trang.
+PAGE_NUMBER = re.compile(r"\s*(\d+)\s*(?:/|of)\s*\d+\s*")
+
+Point = tuple[float, float]
+
+
+class _Base(BaseModel):
+    """Ghi JSON gọn: bỏ trường rỗng, xếp trường theo `_ORDER` cho dễ đọc."""
+
+    _KEEP_EMPTY: ClassVar[set[str]] = set()
+    _ORDER: ClassVar[tuple[str, ...]] = ()
+
+    @model_serializer(mode="wrap")
+    def _compact(self, handler: Any) -> dict[str, Any]:
+        data = handler(self)
+        data = {k: v for k, v in data.items()
+                if k in self._KEEP_EMPTY or v not in (None, [], {})}
+        rank = {k: i for i, k in enumerate(self._ORDER)}
+        return dict(sorted(data.items(), key=lambda kv: rank.get(kv[0], len(rank))))
 
 
 class Provenance(str, Enum):
     """Nội dung này ở đâu ra — quyết định tin được bao nhiêu (NT2)."""
 
-    TEXT_LAYER = "text_layer"   # đọc thẳng từ text layer của PDF, đúng 100%
+    TEXT_LAYER = "text_layer"   # đọc thẳng từ text layer, đúng 100%
     VLM = "vlm"                 # model nhìn ảnh rồi sinh, CÓ THỂ BỊA
     OCR = "ocr"                 # đọc từ pixel, sai chính tả được
-    DERIVED = "derived"         # code suy ra (section, reading order)
-    MANUAL = "manual"           # người gõ tay ở S7 — tin được như text_layer
-
-
-class Layer(str, Enum):
-    BODY = "body"               # nội dung thật
-    FURNITURE = "furniture"     # header/footer/số trang, lặp mọi trang
-
-
-class BBox(BaseModel):
-    """Toạ độ đã CHUẨN HOÁ: [0,1], gốc TRÊN-TRÁI.
-
-    docling dùng gốc DƯỚI-TRÁI (`coord_origin: BOTTOMLEFT`) nên `t > b`. Quy đổi
-    một lần ở biên (`from_docling`), để mọi chỗ dùng sau khỏi tự xoay trục.
-    """
-
-    l: float = Field(ge=0.0, le=1.0)
-    t: float = Field(ge=0.0, le=1.0)
-    r: float = Field(ge=0.0, le=1.0)
-    b: float = Field(ge=0.0, le=1.0)
-
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def area_ratio(self) -> float:
-        """Chiếm bao nhiêu phần diện tích trang. Ngưỡng gọi API VLM dựa vào đây."""
-        return round(max(0.0, self.r - self.l) * max(0.0, self.b - self.t), 6)
-
-    @property
-    def center(self) -> tuple[float, float]:
-        return ((self.l + self.r) / 2, (self.t + self.b) / 2)
-
-    def to_pixel(self, img_w: float, img_h: float) -> tuple[float, float, float, float]:
-        """-> (x0, y0, x1, y1) trên ảnh đã render, để vẽ khung."""
-        return (self.l * img_w, self.t * img_h, self.r * img_w, self.b * img_h)
-
-    def overlaps(self, other: BBox) -> bool:
-        return not (
-            self.r < other.l or other.r < self.l or self.b < other.t or other.b < self.t
-        )
+    MANUAL = "manual"           # người gõ tay (data/patches/) — tin được như text_layer
 
 
 # --------------------------------------------------------------------------- Block
 
 
-class Block(BaseModel):
-    """Lớp cha của mọi mẩu nội dung nằm trên trang."""
+class Block(_Base):
+    """Lớp cha của mọi mẩu nội dung trên trang.
 
-    id: str                     # "p010.b03" — ổn định, Flag và chunk trỏ vào
-    page_no: int
-    bbox: BBox
-    layer: Layer
-    reading_order: int
+    Không có `page_no` / `reading_order` / `layer`: block nằm trong `page.blocks` là đã nói
+    lên trang nào, thứ tự đọc là thứ tự trong mảng, furniture tách riêng ở `page.furniture`.
+    """
+
+    _KEEP_EMPTY: ClassVar[set[str]] = {"content"}
+    _ORDER: ClassVar[tuple[str, ...]] = (
+        "id", "kind", "role", "content", "urls", "cells", "caption",
+        "polygon", "provenance", "structure_provenance", "why_empty",
+    )
+
+    id: str                     # "p010.b03" — ổn định, chunk và câu kịch bản trỏ vào
+    content: str | None = None
+    polygon: list[Point]
     provenance: Provenance
 
-    @property
-    def content(self) -> str | None:
-        """Nội dung dạng chữ — thứ đem đi chunk làm KB. Mỗi lớp con tự định nghĩa."""
-        raise NotImplementedError
+    @field_validator("polygon")
+    @classmethod
+    def _check_polygon(cls, v: list[Point]) -> list[Point]:
+        """4 góc theo chiều kim đồng hồ từ trên-trái, làm tròn 3 chữ số (~1/1000 trang)."""
+        if len(v) != 4:
+            raise ValueError(f"polygon phai co 4 goc, nhan {len(v)}")
+        return [(round(min(max(x, 0.0), 1.0), 3), round(min(max(y, 0.0), 1.0), 3)) for x, y in v]
 
-    @computed_field  # type: ignore[prop-decorator]
     @property
-    def polygon(self) -> list[tuple[float, float]]:
-        """4 góc theo chiều kim đồng hồ từ trên-trái, toạ độ [0,1]. Tính từ bbox."""
-        b = self.bbox
-        return [(b.l, b.t), (b.r, b.t), (b.r, b.b), (b.l, b.b)]
+    def box(self) -> tuple[float, float, float, float]:
+        """-> (trái, trên, phải, dưới)."""
+        xs = [x for x, _ in self.polygon]
+        ys = [y for _, y in self.polygon]
+        return min(xs), min(ys), max(xs), max(ys)
+
+    @property
+    def center(self) -> Point:
+        l, t, r, b = self.box
+        return (l + r) / 2, (t + b) / 2
+
+    @property
+    def area(self) -> float:
+        """Chiếm bao nhiêu phần diện tích trang. Ngưỡng gọi VLM dựa vào đây."""
+        l, t, r, b = self.box
+        return max(0.0, r - l) * max(0.0, b - t)
+
+
+def polygon_from_box(l: float, t: float, r: float, b: float) -> list[Point]:
+    return [(l, t), (r, t), (r, b), (l, b)]
 
 
 class ParsedParagraph(Block):
-    """Mọi thứ là CHỮ: tiêu đề, đoạn văn, và cả bó gạch đầu dòng.
+    """Mọi thứ là CHỮ: tiêu đề, đoạn văn, bó gạch đầu dòng, danh sách link.
 
-    Bó gạch đầu dòng KHÔNG có class riêng — nó là `role="list"`, các dòng ngăn
-    nhau bằng xuống dòng, lấy ra bằng `.lines`. Lý do giữ `role` thay vì gộp hẳn
-    vào `body`: §5 S4 cấm robot đọc bullet nguyên văn, S4 cần biết mẩu này là
-    danh sách để diễn đạt lại thành lời nói.
+    `kind` = mẩu này LÀ GÌ (vẫn là chữ). `role` = robot ĐỐI XỬ với nó thế nào:
 
-    `role` nói robot đối xử với mẩu chữ thế nào — `kind` vẫn là "paragraph" vì nó vẫn là chữ:
-
-        body · title · list · caption      nội dung (layer=body)
-        links                              phần lớn dòng là URL -> KHÔNG đọc URL thành tiếng
-        header · footer · page_number      khung trang (layer=furniture)
+        body      đoạn văn thường
+        title     tiêu đề trang
+        list      bó gạch đầu dòng, một block, các dòng ngăn bằng xuống dòng
+                  -> S4 diễn đạt lại, không đọc bullet nguyên văn (§5 S4)
+        links     >= nửa số dòng là URL -> KHÔNG đọc URL thành tiếng. Luật, tự gán.
+        caption   chú thích
     """
 
     kind: Literal["paragraph"] = "paragraph"
-    text: str
-    text_raw: str = ""          # bản chưa gỡ marker/khoảng trắng thừa
-    role: Literal[
-        "title", "body", "list", "caption", "links", "header", "footer", "page_number"
-    ] = "body"
+    role: Literal["body", "title", "list", "links", "caption"] = "body"
+    content: str
+    urls: list[str] = Field(default_factory=list)   # chỉ có khi role="links"
+
+    @model_validator(mode="after")
+    def _links(self) -> ParsedParagraph:
+        """Suy `role="links"` + tách `urls` từ chữ. Chạy cả lúc nạp lại -> không lệch được."""
+        found = [ln for ln in self.lines if URL_LINE.fullmatch(ln)]
+        if self.role in ("body", "list") and found and 2 * len(found) >= len(self.lines):
+            self.role = "links"
+        self.urls = found if self.role == "links" else []
+        return self
 
     @property
     def lines(self) -> list[str]:
-        """Tách thành từng dòng. Có nghĩa khi `role="list"` / `"links"`."""
-        return [ln.strip() for ln in self.text.split("\n") if ln.strip()]
+        return [ln.strip() for ln in self.content.split("\n") if ln.strip()]
 
-    @property
-    def urls(self) -> list[str]:
-        """Các dòng là URL. Có nghĩa khi `role="links"`."""
-        return [ln for ln in self.lines if URL_LINE.fullmatch(ln)]
 
-    @property
-    def n_chars(self) -> int:
-        return len(self.text)
+def table_markdown(cells: list[list[str]]) -> str | None:
+    if not cells:
+        return None
 
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def content(self) -> str | None:
-        return self.text or None
+    def row(r: list[str]) -> str:
+        return "| " + " | ".join(c.replace("|", "\\|").replace("\n", " ") for c in r) + " |"
+
+    return "\n".join([row(cells[0]), "|" + "---|" * len(cells[0])] + [row(r) for r in cells[1:]])
 
 
 class ParsedTable(Block):
-    """Lưới do TableFormer dựng (có thể sai), chữ trong ô từ text layer (đúng).
+    """Bảng. `cells` là bản gốc, hàng đầu là header; `content` là markdown SINH từ `cells`.
 
-    Hai nguồn khác nhau nên phải khai hai `provenance` riêng — gộp một là mất
-    thông tin.
+    Hai nguồn, hai `provenance` (NT2): chữ trong ô từ text layer (`provenance`, đúng), lưới
+    hàng/cột do TableFormer dựng (`structure_provenance`, CÓ THỂ SAI — số đặt nhầm hàng).
+
+    `content` tính lại mỗi lần NẠP. Sửa `cells` trong bộ nhớ thì phải dựng lại object.
     """
 
     kind: Literal["table"] = "table"
-    n_rows: int = 0
-    n_cols: int = 0
-    header_rows: int = 1
     cells: list[list[str]] = Field(default_factory=list)
     caption: str | None = None
     structure_provenance: Provenance = Provenance.VLM
 
-    @property
-    def header(self) -> list[str]:
-        return self.cells[0] if self.cells and self.header_rows else []
-
-    def rows_as_chunks(self) -> list[str]:
-        """Mỗi hàng một chunk, LẶP HEADER ở mỗi hàng (luật S5 cho bảng lớn)."""
-        head = self.header
-        out: list[str] = []
-        for row in self.cells[self.header_rows:]:
-            pairs = [f"{h}: {c}" for h, c in zip(head, row) if c]
-            out.append(" | ".join(pairs) if pairs else " | ".join(row))
-        return out
-
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def content(self) -> str | None:
-        """Bảng dạng markdown, sinh từ `cells` — `cells` mới là bản gốc."""
-        if not self.cells:
-            return None
-
-        def row(r: list[str]) -> str:
-            cs = [c.replace("|", "\\|").replace("\n", " ") for c in r]
-            return "| " + " | ".join(cs) + " |"
-
-        n_head = max(1, self.header_rows)
-        lines = [row(r) for r in self.cells[:n_head]]
-        lines.append("|" + "---|" * len(self.cells[0]))
-        lines += [row(r) for r in self.cells[n_head:]]
-        return "\n".join(lines)
+    @model_validator(mode="after")
+    def _markdown(self) -> ParsedTable:
+        self.content = table_markdown(self.cells)
+        return self
 
 
 class ParsedImage(Block):
-    """Mẩu ảnh. `description` do VLM sinh nên `provenance` luôn là `vlm`.
+    """Ảnh. `content` = mô tả của VLM, nên `provenance` là `vlm` (hoặc `manual` nếu người sửa).
 
-    `skip_reason` là thứ docling không lưu mà ta cần: nhìn `description=None`
-    phải biết được là CHƯA GỌI hay GỌI MÀ FAIL — hai ca xử lý khác hẳn nhau.
+    `content: null` thì `why_empty` nói VÌ SAO — *chưa gọi* hay *gọi mà không có* xử lý
+    khác hẳn nhau:
+
+        decorative             logo, hoạ tiết — VLM xem rồi, không có nội dung. Hợp lệ.
+        area_below_threshold   ảnh nhỏ quá, không gọi VLM. Hợp lệ.
+        not_described          ảnh ĐỦ TO mà không có mô tả -> mất nội dung thật, CẦN XEM.
+        api_error              gọi VLM mà lỗi -> chạy lại là có thể được, CẦN XEM.
     """
 
     kind: Literal["image"] = "image"
-    description: str | None = None
-    described_by: str | None = None       # "gemini-2.5-flash-lite@api"
-    prompt_hash: str | None = None        # đổi prompt -> mô tả cũ lạc hậu
-    skip_reason: str | None = None        # "area_below_threshold" | "api_error" | ...
-    is_decorative: bool = False
-    classification: list[tuple[str, float]] = Field(default_factory=list)
-
-    @property
-    def was_described(self) -> bool:
-        return bool(self.description) and not self.is_decorative
+    why_empty: Literal["decorative", "area_below_threshold", "not_described", "api_error"] | None = None
 
     @property
     def needs_review(self) -> bool:
-        """Ảnh đủ to mà không có mô tả -> mất nội dung thật.
-
-        Ảnh trang trí KHÔNG tính: VLM đã xem và kết luận không có nội dung, đó là
-        câu trả lời hợp lệ chứ không phải thiếu sót. Không loại nó ra thì logo cỡ
-        lớn bắn cờ oan và kéo tụt `Flag precision` của §11.
-        """
-        if self.is_decorative or self.was_described:
-            return False
-        return self.bbox.area_ratio >= 0.05
-
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def content(self) -> str | None:
-        return self.description if self.was_described else None
+        return self.why_empty in ("not_described", "api_error")
 
 
 AnyBlock = Annotated[
@@ -230,17 +205,33 @@ AnyBlock = Annotated[
 ]
 
 
-# ------------------------------------------------------------------ tầng tài liệu
+# ------------------------------------------------------------------ tầng trang
 
 
-class ParsedPage(BaseModel):
+class Furniture(_Base):
+    """Chữ lặp ở mọi trang. KHÔNG vào KB, nhưng là nguồn dựng chương và bắt lỗi bộ slide.
+
+    `page_number` ("11 / 40") CHỈ ghi khi số in trên slide LỆCH `page_no` — trùng thì thừa.
+    """
+
+    _ORDER: ClassVar[tuple[str, ...]] = ("header", "footer", "page_number")
+
+    header: str | None = None             # thanh tiêu đề chạy — nguồn DUY NHẤT dựng chương
+    footer: list[str] = Field(default_factory=list)
+    page_number: str | None = None
+
+
+class ParsedPage(_Base):
+    _ORDER: ClassVar[tuple[str, ...]] = (
+        "page_no", "title", "section_id", "page_hash", "blocks", "furniture",
+    )
+
     page_no: int
-    size_pt: tuple[float, float]
-    page_hash: str = ""                   # incremental build (§8)
-    title: str | None = None              # tiêu đề của trang
+    title: str | None = None
     section_id: str | None = None         # trỏ lên ParsedDocument.sections
-    blocks: list[AnyBlock] = Field(default_factory=list)      # layer=body
-    furniture: list[AnyBlock] = Field(default_factory=list)   # layer=furniture
+    page_hash: str = ""                   # đổi nội dung / vị trí -> đổi hash -> S4 viết lại (§8)
+    blocks: list[AnyBlock] = Field(default_factory=list)
+    furniture: Furniture = Field(default_factory=Furniture)
 
     @property
     def images(self) -> list[ParsedImage]:
@@ -256,52 +247,48 @@ class ParsedPage(BaseModel):
 
     @property
     def running_header(self) -> str | None:
-        """Thanh tiêu đề chạy ở đỉnh trang — nguồn duy nhất dựng được chương.
-
-        Tin nhãn `role="header"` của docling trước; không có nhãn thì mới đoán theo vị trí.
-        """
-        paras = [b for b in self.furniture if isinstance(b, ParsedParagraph) and b.text]
-        for b in paras:
-            if b.role == "header":
-                return b.text
-        for b in paras:
-            if b.bbox.center[1] < 0.15:
-                return b.text
-        return None
-
-    @property
-    def page_label(self) -> str | None:
-        """Số trang IN TRÊN GIẤY ('11 / 40'), để đối chiếu với page_no."""
-        for b in self.furniture:
-            if isinstance(b, ParsedParagraph) and PAGE_NUMBER.fullmatch(b.text):
-                return b.text.strip()
-        return None
+        return self.furniture.header
 
     @property
     def is_text_starved(self) -> bool:
         """<=1 mẩu chữ -> trang sống chết nhờ mô tả ảnh."""
         return len(self.paragraphs) <= 1
 
+    def compute_hash(self) -> str:
+        """Hash nội dung + vị trí + furniture. Đổi chữ HOẶC đổi bố cục đều ra hash mới."""
+        h = hashlib.sha256()
+        for b in self.blocks:
+            h.update(f"{b.kind}|{b.polygon}|{b.content or ''}".encode("utf-8"))
+        f = self.furniture
+        h.update(f"|{f.header}|{f.footer}|{f.page_number}".encode("utf-8"))
+        return h.hexdigest()[:16]
 
-class SectionSpan(BaseModel):
-    """Một chương: trang start..end. SUY RA chứ không parse ra — phải khai nguồn."""
+
+# ------------------------------------------------------------------ tầng tài liệu
+
+
+class SectionSpan(_Base):
+    """Một chương. SUY RA chứ không parse ra — nên phải khai `source` + `confidence`."""
 
     id: str
     title: str
-    start_page: int
-    end_page: int
+    pages: tuple[int, int]                # [trang đầu, trang cuối]
     source: Literal["page_header", "title_bbox", "outline_page", "manual"]
     confidence: float = Field(ge=0.0, le=1.0)
 
     @property
-    def n_pages(self) -> int:
-        return self.end_page - self.start_page + 1
+    def start_page(self) -> int:
+        return self.pages[0]
+
+    @property
+    def end_page(self) -> int:
+        return self.pages[1]
 
     def contains(self, page_no: int) -> bool:
         return self.start_page <= page_no <= self.end_page
 
 
-class Flag(BaseModel):
+class Flag(_Base):
     """Chỗ cần người xem. §10 cấm bắt duyệt cả deck — chỉ duyệt phần bị flag."""
 
     kind: Literal[
@@ -311,36 +298,39 @@ class Flag(BaseModel):
         "page_label_mismatch",
         "no_sections",
     ]
+    severity: Literal["info", "warn", "error"] = "warn"
     page_no: int | None = None
     block_id: str | None = None
     detail: str = ""
-    severity: Literal["info", "warn", "error"] = "warn"
 
 
-class SourceInfo(BaseModel):
+class SourceInfo(_Base):
     path: str
     sha256: str = ""
-    n_pages: int = 0
 
 
-class ParserInfo(BaseModel):
-    """Đổi model hay đổi option mà không parse lại -> dữ liệu cũ mới lẫn nhau
-    trong im lặng. Cùng loại bẫy với luật nhúng `model_id` vào tên collection."""
+class ParserInfo(_Base):
+    """Đổi model hay option mà không parse lại -> dữ liệu cũ mới lẫn nhau trong im lặng.
+
+    `vlm_model` là model ĐÃ mô tả ảnh (đọc từ output docling), áp cho mọi ảnh của tài liệu.
+    """
 
     docling_version: str = ""
-    do_ocr: bool = False
     vlm_model: str | None = None
+    do_ocr: bool = False
     picture_area_threshold: float = 0.05
     options_hash: str = ""
 
 
-class ParsedDocument(BaseModel):
+class ParsedDocument(_Base):
+    _ORDER: ClassVar[tuple[str, ...]] = ("doc_id", "source", "parser", "sections", "flags", "pages")
+
     doc_id: str
     source: SourceInfo
     parser: ParserInfo
-    pages: list[ParsedPage] = Field(default_factory=list)
     sections: list[SectionSpan] = Field(default_factory=list)
     flags: list[Flag] = Field(default_factory=list)
+    pages: list[ParsedPage] = Field(default_factory=list)
 
     # -------- truy vấn
 
@@ -354,7 +344,7 @@ class ParsedDocument(BaseModel):
 
     @property
     def n_described_images(self) -> int:
-        return sum(1 for p in self.pages for im in p.images if im.was_described)
+        return sum(1 for p in self.pages for im in p.images if im.content)
 
     def page(self, page_no: int) -> ParsedPage | None:
         return next((p for p in self.pages if p.page_no == page_no), None)
@@ -362,16 +352,35 @@ class ParsedDocument(BaseModel):
     def section_of(self, page_no: int) -> SectionSpan | None:
         return next((s for s in self.sections if s.contains(page_no)), None)
 
-    def pages_in(self, section_id: str) -> list[ParsedPage]:
-        sec = next((s for s in self.sections if s.id == section_id), None)
-        if sec is None:
-            return []
-        return [p for p in self.pages if sec.contains(p.page_no)]
+    # -------- đọc / ghi
 
-    def iter_blocks(self, layer: Layer | None = Layer.BODY) -> Iterator[Block]:
-        """Duyệt phẳng toàn tài liệu. layer=None -> cả body lẫn furniture."""
-        for page in self.pages:
-            if layer in (None, Layer.BODY):
-                yield from page.blocks
-            if layer in (None, Layer.FURNITURE):
-                yield from page.furniture
+    @classmethod
+    def load(cls, path: str | Path) -> ParsedDocument:
+        """Nạp file đã parse. File định dạng cũ -> báo MỘT câu, không đổ 100 lỗi validate."""
+        try:
+            return cls.model_validate_json(Path(path).read_text(encoding="utf-8"))
+        except ValidationError as e:
+            raise SystemExit(
+                f"{path}: khong nap duoc ({e.error_count()} loi) — co the la dinh dang cu.\n"
+                f"Chay lai buoc 2 tu output docling: python src/parsing/cli.py "
+                f"out/parse_api/<ten>.json -o {path}"
+            ) from None
+
+    def to_json(self) -> str:
+        """indent=2, nhưng mảng ngắn (polygon, hàng bảng, footer) gập về một dòng."""
+        return _fmt(self.model_dump(mode="json")) + "\n"
+
+
+def _fmt(v: Any, ind: int = 0) -> str:
+    """Mảng không chứa object và dài <= 100 ký tự -> một dòng; còn lại xuống dòng như indent=2."""
+    pad = "  " * ind
+    if isinstance(v, dict) and v:
+        items = [f"{pad}  {json.dumps(k, ensure_ascii=False)}: {_fmt(x, ind + 1)}"
+                 for k, x in v.items()]
+        return "{\n" + ",\n".join(items) + f"\n{pad}}}"
+    if isinstance(v, list) and v:
+        flat = json.dumps(v, ensure_ascii=False, separators=(", ", ": "))
+        if len(flat) <= 100 and not any(isinstance(x, dict) for x in v):
+            return flat
+        return "[\n" + ",\n".join(f"{pad}  {_fmt(x, ind + 1)}" for x in v) + f"\n{pad}]"
+    return json.dumps(v, ensure_ascii=False)

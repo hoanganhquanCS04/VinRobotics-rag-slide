@@ -88,9 +88,6 @@ class Scenario(BaseModel):
     pronunciation_hash: str              # S6b so trước khi synth — lệch là DỪNG
     slides: list[SlideScript] = Field(default_factory=list)
 
-    def slide(self, page_no: int) -> SlideScript | None:
-        return next((s for s in self.slides if s.page_no == page_no), None)
-
     @property
     def seconds(self) -> float:
         return sum(s.seconds for s in self.slides)

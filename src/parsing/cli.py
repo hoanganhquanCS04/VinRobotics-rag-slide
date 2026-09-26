@@ -5,7 +5,7 @@ Nhận CẢ HAI loại file, tự nhận biết:
     .json thô của docling   -> parse thành ParsedDocument
     .json của ParsedDocument -> nạp lại để xem
 
-    # parse rồi ghi ra — kèm luôn out/parsed/<ten>.compact.json (bản gọn để đọc)
+    # parse rồi ghi ra
     python src/parsing/cli.py "out/parse_api/<ten>.json" -o out/parsed/<ten>.json
 
     # xem một trang
@@ -25,10 +25,9 @@ from pathlib import Path
 if __package__ in (None, ""):  # chạy thẳng file, không qua -m
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from parsing.compact import write_compact
 from parsing.flags import apply_flags
 from parsing.from_docling import from_docling_json
-from parsing.models import ParsedDocument, ParsedImage, ParsedParagraph, ParsedTable
+from parsing.models import ParsedDocument, ParsedParagraph
 from parsing.patch import apply_patch, find_patch, load_patch
 from parsing.sections import apply_sections
 
@@ -80,7 +79,7 @@ def load(
         apply_flags(doc)
         return doc, True
 
-    return ParsedDocument.model_validate(raw), False
+    return ParsedDocument.load(p), False
 
 
 # ------------------------------------------------------------------------ hiện
@@ -114,25 +113,18 @@ def show_pages(doc: ParsedDocument, pages: list[int], full: bool) -> None:
         where = f"{sec.id} ({sec.title}, p{sec.start_page}-{sec.end_page})" if sec else "—"
         log.info("")
         log.info("--- trang %d | %s | chuong: %s", pg, page.title or "(khong tieu de)", where)
-        log.info("    hash=%s  starved=%s  label=%s",
-                 page.page_hash, page.is_text_starved, page.page_label)
+        log.info("    hash=%s  starved=%s", page.page_hash, page.is_text_starved)
 
         for b in page.blocks:
-            if isinstance(b, ParsedParagraph):
-                kind, body = f"para/{b.role}", b.text
-            elif isinstance(b, ParsedImage):
-                kind = "image"
-                body = b.description or f"(khong mo ta — {b.skip_reason})"
-            elif isinstance(b, ParsedTable):
-                kind, body = "table", f"{b.n_rows}x{b.n_cols}"
-            else:
-                kind, body = b.kind, ""
+            kind = f"para/{b.role}" if isinstance(b, ParsedParagraph) else b.kind
+            body = b.content or f"(rong — {getattr(b, 'why_empty', None)})"
             log.info("    %-10s %-12s %6.2f%% %-10s %s",
-                     b.id, kind, b.bbox.area_ratio * 100, b.provenance.value, _cut(body, full))
+                     b.id, kind, b.area * 100, b.provenance.value, _cut(body, full))
 
-        furn = " · ".join((b.content or "") for b in page.furniture)
-        if furn:
-            log.info("    furniture: %s", _cut(furn, full, 90))
+        f = page.furniture
+        if f.header or f.footer or f.page_number:
+            log.info("    furniture: header=%s | footer=%s%s", f.header, " · ".join(f.footer),
+                     f" | so trang in LECH: {f.page_number}" if f.page_number else "")
 
         for f in doc.flags:
             if f.page_no == pg:
@@ -141,10 +133,10 @@ def show_pages(doc: ParsedDocument, pages: list[int], full: bool) -> None:
 
 def report(doc: ParsedDocument) -> None:
     n_body = sum(len(p.blocks) for p in doc.pages)
-    n_furn = sum(len(p.furniture) for p in doc.pages)
+    n_hdr = sum(1 for p in doc.pages if p.furniture.header)
     log.info("")
     log.info("=== %s", doc.doc_id)
-    log.info("    %d trang | block body=%d furniture=%d", doc.n_pages, n_body, n_furn)
+    log.info("    %d trang | %d block | %d trang co thanh header", doc.n_pages, n_body, n_hdr)
     log.info("    anh %d, mo ta duoc %d | bang %d",
              doc.n_images, doc.n_described_images, sum(len(p.tables) for p in doc.pages))
 
@@ -216,11 +208,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.out:
         out = Path(args.out)
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(doc.model_dump_json(indent=2), encoding="utf-8")
+        out.write_text(doc.to_json(), encoding="utf-8")
         log.info("")
         log.info("ghi -> %s (%d KB)", out, out.stat().st_size // 1024)
-        small = write_compact(doc, out)
-        log.info("ghi -> %s (%d KB, ban gon de doc)", small, small.stat().st_size // 1024)
 
     n_err = sum(1 for f in doc.flags if f.severity == "error")
     if n_err and not args.page:

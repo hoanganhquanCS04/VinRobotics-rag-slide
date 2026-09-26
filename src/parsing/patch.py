@@ -45,13 +45,11 @@ from pathlib import Path
 from typing import Any
 
 from parsing.models import (
-    BBox,
-    Flag,
-    Layer,
     ParsedDocument,
     ParsedImage,
     ParsedParagraph,
     Provenance,
+    polygon_from_box,
 )
 
 log = logging.getLogger(__name__)
@@ -81,27 +79,28 @@ def apply_patch(doc: ParsedDocument, patch: dict[str, Any]) -> ParsedDocument:
     pages = patch.get("pages") or {}
     n_block = n_fix = 0
 
+    # Áp lại nhiều lần phải ra như một lần: nạp lại file ĐÃ vá rồi vá tiếp là nhân đôi block
+    # (đã dính: p015.m00/m01 thành 2 bản). File patch là nguồn DUY NHẤT của block vá -> xoá
+    # mọi block vá cũ trước, kể cả của trang đã bị bỏ khỏi patch.
+    for page in doc.pages:
+        if any(".m" in b.id for b in page.blocks):
+            page.blocks = [b for b in page.blocks if ".m" not in b.id]
+            page.page_hash = page.compute_hash()
+
     for raw_no, spec in pages.items():
         page = doc.page(int(raw_no))
         if page is None:
             log.warning("  patch: khong co trang %s, bo qua", raw_no)
             continue
 
-        blocks = spec.get("add_blocks") or []
-        for i, b in enumerate(blocks):
-            l, t, r, bo = b.get("bbox") or [0.05, 0.20, 0.95, 0.90]
-            order = max((x.reading_order for x in page.blocks), default=0) + 1 + i
+        for i, b in enumerate(spec.get("add_blocks") or []):     # nối vào CUỐI trang
             page.blocks.append(
                 ParsedParagraph(
                     id=f"p{page.page_no:03d}.m{i:02d}",     # m = manual
-                    page_no=page.page_no,
-                    bbox=BBox(l=l, t=t, r=r, b=bo),
-                    layer=Layer.BODY,
-                    reading_order=order,
-                    provenance=Provenance.MANUAL,
-                    text=b.get("text", "").strip(),
-                    text_raw=b.get("text", "").strip(),
                     role=b.get("role", "body"),
+                    content=b.get("text", "").strip(),
+                    polygon=polygon_from_box(*(b.get("bbox") or [0.05, 0.20, 0.95, 0.90])),
+                    provenance=Provenance.MANUAL,
                 )
             )
             n_block += 1
@@ -113,24 +112,12 @@ def apply_patch(doc: ParsedDocument, patch: dict[str, Any]) -> ParsedDocument:
                 # block_id sai thì BÁO, không lờ đi — lờ đi là mô tả bịa vẫn nằm trong index
                 log.warning("  patch: trang %s khong co anh %s, bo qua", raw_no, bid)
                 continue
-            im.description = desc.strip() or None
-            im.is_decorative = not desc.strip()
+            im.content = desc.strip() or None
+            im.why_empty = None if desc.strip() else "decorative"
             im.provenance = Provenance.MANUAL
-            im.described_by = "nguoi"
-            im.skip_reason = None
             n_fix += 1
 
-        page.blocks.sort(key=lambda x: x.reading_order)
-        # Vá xong thì hash đổi -> incremental build biết trang này khác rồi
-        from parsing.from_docling import _page_hash
-
-        page.page_hash = _page_hash(page)
-
-        if note := spec.get("note"):
-            doc.flags.append(
-                Flag(kind="empty_page", page_no=page.page_no,
-                     detail=f"da va tay: {note}", severity="info")
-            )
+        page.page_hash = page.compute_hash()   # vá xong hash đổi -> S4 biết trang này khác
 
     log.info("  patch: them %d block, sua %d mo ta anh, tren %d trang",
              n_block, n_fix, len(pages))

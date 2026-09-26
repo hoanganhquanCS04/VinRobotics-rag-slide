@@ -24,7 +24,7 @@ if __package__ in (None, ""):
 
 from parsing.models import ParsedDocument
 from scenario.generate import DEFAULT_MODEL, load_prompt, render_prompt, run_deck, slide_type
-from scenario.models import Scenario, SlideScript
+from scenario.models import Scenario
 from scenario.syllables import Pronunciation
 
 log = logging.getLogger("scenario")
@@ -131,7 +131,7 @@ def main(argv: list[str] | None = None) -> int:
         if hasattr(s, "reconfigure"):
             s.reconfigure(encoding="utf-8", errors="replace")
 
-    doc = ParsedDocument.model_validate(json.loads(Path(args.parsed).read_text(encoding="utf-8")))
+    doc = ParsedDocument.load(args.parsed)
     deck_dir = Path("out/deck") / doc.doc_id
     out = Path(args.out) if args.out else deck_dir / "scenario.json"
     pron = Pronunciation.load(args.pron or deck_dir / "pronunciation.json")

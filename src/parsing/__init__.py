@@ -9,10 +9,9 @@ Lớp này chỉ BIỂU DIỄN — không chunk, không enrich, không embed. Đ
 """
 
 from parsing.models import (
-    BBox,
     Block,
     Flag,
-    Layer,
+    Furniture,
     ParsedDocument,
     ParsedImage,
     ParsedPage,
@@ -25,10 +24,9 @@ from parsing.models import (
 )
 
 __all__ = [
-    "BBox",
     "Block",
     "Flag",
-    "Layer",
+    "Furniture",
     "ParsedDocument",
     "ParsedImage",
     "ParsedPage",

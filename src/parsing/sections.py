@@ -112,8 +112,7 @@ def detect_sections(doc: ParsedDocument) -> tuple[list[SectionSpan], list[str]]:
         SectionSpan(
             id=f"sec_{i:02d}",
             title=b["title"],
-            start_page=b["start"],
-            end_page=b["end"],
+            pages=(b["start"], b["end"]),
             source="page_header",
             confidence=confidence,
         )
