@@ -1,313 +1,244 @@
-# ParsedDocument — cấu trúc dữ liệu sau khi parse PDF
+# ParsedDocument — cấu trúc dữ liệu sau khi parse
 
-**Code:** [`src/parsing/`](../../src/parsing/) · **Vào:** file `.json` docling sinh · **Ra:** `out/parsed/*.json`
+**Code:** [`src/parsing/`](../../src/parsing/) · **Vào:** `.json` docling sinh (từ `.pdf` hoặc `.pptx`)
+· **Ra:** `out/parsed/<ten>.json` + `out/parsed/<ten>.compact.json`
 
 ---
 
-## 0. Bối cảnh v0 — một file làm cả hai việc ★
+## 0. Bối cảnh v0 ★
 
-Thiết kế gốc ([CLAUDE.md §3](../../CLAUDE.md)) có hai nguồn tách biệt: deck `.pptx` để
-trình chiếu, `source/*.pdf` làm tài liệu nền. **Hiện tại không như vậy** — chỉ có
-**một file PDF, vừa là deck vừa là KB**.
-
-Nên `ParsedDocument` đang gánh hai vai:
-
-```
-                      ┌──► làm DECK  →  S1 → S2 → S4 Scenario  (robot nói gì)
-một file .pdf ──►  ParsedDocument
-                      └──► làm KB    →  S5 chunk + embed       (robot tra gì)
-```
-
-**Ba hệ quả**, không lờ đi được:
-
-1. **Không có `chart_data` / `tables` / `build_steps` bản chuẩn.** Chúng đến từ XML của
-   pptx. Với PDF, số liệu biểu đồ do VLM đọc từ pixel → luôn là `provenance: vlm`.
-2. **S3 Alignment vô nghĩa ở v0.** Align slide với nguồn mà nguồn chính là slide thì
-   mỗi trang map vào chính nó, không sinh thêm tri thức. Bỏ qua cho tới khi có tài
-   liệu nguồn riêng.
-3. **Robot chỉ trả lời ở mức mô tả slide.** Đúng cảnh báo
-   [s5 §8](../offline/s5-kb-construction.md). Ngưỡng từ chối phải nâng cao, và
-   **tuyệt đối không để LLM tự phình kiến thức từ slide ra để bù**.
-
-Lối thoát duy nhất: đưa vào **tài liệu nguồn thật** tách khỏi deck.
-
-**Lưu ở đâu:** file JSON trên đĩa, chưa có vector DB.
+Một file duy nhất vừa là **deck** (robot nói gì) vừa là **KB** (robot tra gì) — xem
+[CLAUDE.md §3.0](../../CLAUDE.md). Hệ quả: không có `chart_data`/`tables` chuẩn từ XML, S3
+Alignment vô nghĩa, robot chỉ trả lời ở mức **mô tả slide**. Lối thoát duy nhất là đưa
+tài liệu nguồn thật vào, tách khỏi deck.
 
 ```
-data/raw/<ten>.pdf                        file gốc
-out/parse_api/<ten>__<model>.{md,json}    docling thô
-out/parsed/<ten>.json                     ParsedDocument   ← file này
-out/pages/<ten>_pNNN.png                  ảnh có khung bbox
+data/raw/<ten>.{pdf,pptx}           file gốc
+out/parse_api/<ten>.{md,json}       docling thô              (scripts/parse_api.py)
+out/parsed/<ten>.json               ParsedDocument ĐẦY ĐỦ    ← pipeline đọc file này
+out/parsed/<ten>.compact.json       bản GỌN để người đọc     ← tự ghi kèm, pipeline KHÔNG đọc
 ```
 
 ---
 
-## 1. Để làm gì
+## 1. Cấu trúc — đọc qua bản gọn
 
-Biến một file PDF thành thứ máy đọc được, theo ba tầng:
+Mở `<ten>.compact.json` là thấy toàn bộ cấu trúc. Tài liệu → trang → block:
 
 ```
-📦 TÀI LIỆU
-   ├── 📄 TRANG   (40 cái)
-   │      └── 🧩 MẨU   (chữ / bảng / ảnh)
-   ├── 📑 CHƯƠNG  (trang nào thuộc chương nào)
-   └── 🚩 CỜ      (chỗ nào có vấn đề, cần người xem)
+📦 doc_id, n_pages
+ ├── sections[]    chương: {id, title, pages: [đầu, cuối]}
+ ├── flags[]       chỗ cần người xem
+ └── pages[]
+      └── 📄 page_no, title, section_id
+           ├── blocks[]      NỘI DUNG THẬT, theo thứ tự đọc
+           │    └── 🧩 id · kind · role · content · polygon · provenance
+           └── furniture     {header, footer[]} — chỉ chữ; page_number chỉ hiện khi lệch page_no
 ```
 
-Mỗi **mẩu** trả lời đúng ba câu:
+**Mỗi block trả lời đúng ba câu**, loại nào cũng vậy:
 
 | | field | ví dụ |
 |---|---|---|
-| nội dung gì | `embed_text()` | `"Đồ thị dạng đường"` |
-| nằm chỗ nào | `bbox` | góc trên trái, chiếm 1.9% trang |
-| ai sinh ra | `provenance` | `text_layer` (chắc đúng) / `vlm` (có thể sai) |
+| nói gì | `content` | `"Đồ thị dạng đường"` — thứ đem đi chunk làm KB |
+| nằm đâu | `polygon` | 4 góc `[[l,t],[r,t],[r,b],[l,b]]`, `[0,1]`, gốc **trên-trái** |
+| tin được không | `provenance` | `text_layer` (chữ thật, đúng 100%) · `vlm` (máy tả, có thể sai) · `manual` (người sửa) |
 
-Cột cuối quan trọng nhất — nó là NT2 (§2 CLAUDE.md) đóng thành kiểu dữ liệu.
+`content` theo từng loại:
+
+| `kind` | `content` là | thêm |
+|---|---|---|
+| `paragraph` | chữ trên slide | `role` — luôn có, xem bảng dưới · `urls` khi `role: links` |
+| `image` | mô tả của VLM | `why_empty` khi `content: null`: `decorative` · `area_below_threshold` · `not_described` |
+| `table` | markdown của bảng | `caption` |
+
+`kind` = mẩu này **là gì** (chữ / ảnh / bảng). `role` = robot **đối xử với chữ đó thế nào**:
+
+| `role` | ở đâu | nghĩa | ai gán |
+|---|---|---|---|
+| `body` | blocks | đoạn văn thường | mặc định |
+| `title` | blocks | tiêu đề trang | docling |
+| `list` | blocks | bó gạch đầu dòng — S4 diễn đạt lại, không đọc bullet | docling |
+| `links` | blocks | ≥ nửa số dòng là URL — **không đọc URL thành tiếng** | luật |
+| `caption` | blocks | chú thích | docling |
+| `header` | furniture | thanh tiêu đề chạy — nguồn dựng chương | docling |
+| `footer` | furniture | tác giả, tên môn… | docling |
+| `page_number` | furniture | `"11 / 40"` — docling gộp vào footer, luật tách ra. Bản gọn chỉ hiện khi LỆCH `page_no` (slide ẩn/xoá/đánh số sai) | luật |
+
+Deck `.pptx` hiện chưa có furniture: docling không gắn nhãn header/footer cho pptx.
+
+Ví dụ thật — trang 11 của `3_datavisualization`:
+
+```json
+{
+  "page_no": 11, "title": "Đồ thị dạng đường", "section_id": "sec_00",
+  "blocks": [
+    {"id": "p011.b01", "kind": "paragraph", "role": "title",
+     "content": "Đồ thị dạng đường",
+     "polygon": [[0.023, 0.083], [0.373, 0.083], [0.373, 0.138], [0.023, 0.138]],
+     "provenance": "text_layer"},
+    {"id": "p011.b02", "kind": "image",
+     "content": "Đoạn mã Python và biểu đồ đường ... plt.savefig('line_graph.png') ...",
+     "polygon": [[0.22, 0.181], [0.776, 0.181], [0.776, 0.962], [0.22, 0.962]],
+     "provenance": "vlm"},
+    {"id": "p011.b03", "kind": "image", "content": null,
+     "polygon": [[0.78, 0.934], [0.993, 0.934], [0.993, 0.961], [0.78, 0.961]],
+     "provenance": "vlm", "why_empty": "area_below_threshold"}
+  ],
+  "furniture": {
+    "header": "Đồ thị dạng đường",
+    "footer": ["VH Thư", "Nhập môn Khoa học dữ liệu"]
+  }
+}
+```
+
+Trang này chỉ có **1 mẩu chữ**, trùng tiêu đề với 6 trang khác cùng chương. Thứ phân biệt
+nó là mô tả ảnh — `plt.savefig` chỉ tồn tại nhờ tầng VLM. Đó là insight §1 CLAUDE.md:
+slide là bản nén mất mát.
+
+Trang link — p38, block `links` kèm `urls` tách sẵn:
+
+```json
+{"id": "p038.b03", "kind": "paragraph", "role": "links",
+ "content": "https://www.nhatot.com/mua-ban-bat-dong-san-ha-noi\nhttps://batdongsan.com.vn/...",
+ "urls": ["https://www.nhatot.com/mua-ban-bat-dong-san-ha-noi", "https://batdongsan.com.vn/...", "..."],
+ "polygon": [[0.07, 0.343], [0.894, 0.343], [0.894, 0.883], [0.07, 0.883]],
+ "provenance": "text_layer"}
+```
+
+Header p38 ghi `"Dữ liệu địa lý"` nhưng tiêu đề là `"Bài tập nhóm chương 2+3"` — trang bài
+tập kế thừa header chương trước. Lệch này là tín hiệu nhận trang `exercise` (CLAUDE.md §5).
 
 ---
 
-## 2. Cây kế thừa — ai là LOẠI của ai
+## 2. Bản đầy đủ = bản gọn + phần cho máy
+
+Pipeline đọc file đầy đủ vì cần thêm mấy thứ bản gọn bỏ đi:
+
+| chỉ có ở bản đầy đủ | ai cần |
+|---|---|
+| `page_hash` | S4 — biết trang nào đổi để viết lại kịch bản (§8 CLAUDE.md) |
+| `source`, `parser` | biết file gốc nào, docling bản nào, VLM nào — đổi mà không parse lại là lẫn dữ liệu |
+| `described_by`, `prompt_hash` của ảnh | đổi prompt → biết mô tả nào đã lạc hậu |
+| `cells` của bảng | cắt bảng lớn theo hàng, lặp header (`rows_as_chunks()`) |
+| `bbox`, `text`, `description` | field GỐC — `content`/`polygon` tính ra từ chúng |
+
+Bản gọn bỏ những field **lặp nhau**: `bbox`/`area_ratio` (đã có `polygon`),
+`text`/`text_raw`/`description` (đã có `content`), `page_no`/`reading_order`/`layer` (vị
+trí trong mảng đã nói lên).
+
+> Hướng sau: gộp hai bản làm một — `content`/`polygon` thành field lưu thật, bỏ
+> `text`/`bbox`. Chưa làm vì `bbox` đang dùng ở ~6 chỗ và đổi `page_hash` là phải chạy lại S4.
+
+---
+
+## 3. Trong code
 
 ```
-Block                    ← tên gọi chung: "một mẩu nằm trên trang"
-   │                       ai cũng có: id, page_no, bbox, layer, reading_order, provenance
-   │
-   ├── ParsedParagraph    mọi thứ là CHỮ
-   ├── ParsedTable        bảng
-   └── ParsedImage        ảnh
+Block                     id · page_no · bbox · layer · reading_order · provenance
+ │                        .content  .polygon   ← mỗi loại tự định nghĩa content
+ ├── ParsedParagraph      text · text_raw · role · .lines · .urls
+ ├── ParsedTable          cells · n_rows · n_cols · header_rows · caption · structure_provenance
+ └── ParsedImage          description · described_by · prompt_hash · skip_reason · is_decorative
+
+ParsedPage                page_no · title · section_id · page_hash · blocks · furniture
+                          .paragraphs .images .tables · .running_header .page_label .is_text_starved
+ParsedDocument            doc_id · source · parser · pages · sections · flags
+SectionSpan               id · title · start_page · end_page · source · confidence
+Flag                      kind · page_no · block_id · detail · severity
 ```
 
-`Block` chỉ là tên gọi chung — không có mẩu nào "là Block thuần". Ba cái dưới mới là
-hàng thật.
-
-**Tác dụng:** khai `bbox`, `page_no`, `provenance` một lần ở `Block`, ba đứa con tự có.
-Nhờ vậy duyệt được mà không cần biết đang cầm loại nào:
+`.content` và `.polygon` là `computed_field`: **tính** từ field gốc, nhưng vẫn được ghi ra
+JSON đầy đủ để mở file ra xem được.
 
 ```python
-for b in page.blocks:
-    print(b.page_no)        # cái nào cũng có
-    print(b.embed_text())   # mỗi loại tự trả kiểu của nó
-```
-
----
-
-## 3. Cây chứa — ai NẰM TRONG ai
-
-```
-ParsedDocument
- ├─ source            file nào, hash gì
- ├─ parser            model nào, có bật OCR không
- │
- ├─ pages     [40] ─► ParsedPage
- │                      ├─ title          tiêu đề trang
- │                      ├─ section_id     thuộc chương nào
- │                      ├─ page_hash      để build lại phần đổi thôi (§8)
- │                      ├─ blocks    [*]  ◄── NỘI DUNG THẬT
- │                      └─ furniture [*]  ◄── header/footer, để riêng
- │
- ├─ sections  [7]  ─► SectionSpan    "p9→15 = Đồ thị dạng đường"
- └─ flags     [11] ─► Flag           "p38 header ghi sai"
-```
-
----
-
-## 4. Từng class
-
-### `Block` — lớp cha
-
-| field | nghĩa |
-|---|---|
-| `id` | tên riêng, kiểu `p010.b03`. Cờ và chunk trỏ vào cái này |
-| `page_no` | trang số mấy |
-| `bbox` | toạ độ, chuẩn hoá `[0,1]`, gốc **trên-trái** |
-| `layer` | `body` (nội dung) hay `furniture` (khung trang) |
-| `reading_order` | thứ tự đọc trên trang |
-| `provenance` | `text_layer` · `vlm` · `ocr` · `derived` |
-
-### `ParsedParagraph` — mọi thứ là chữ
-
-```
-text       nội dung
-text_raw   bản chưa dọn
-role       title | body | list | caption
-.lines     tách thành từng dòng (có nghĩa khi role="list")
-```
-
-**Bó gạch đầu dòng KHÔNG có class riêng.** Nó là `role="list"`, các dòng ngăn nhau
-bằng xuống dòng. Trang 36 ra thế này:
-
-```
-p036.b01  paragraph  role=title  "Dữ liệu địa lý"
-p036.b02  paragraph  role=list   "Một loại trực quan hóa phổ biến...
-                                  Công cụ chính của Matplotlib...
-                                  Cartopy là một thư viện Python...
-                                  Cartopy được xem là người kế thừa...
-                                  Bên cạnh đó hiện nay API Google Maps..."
-```
-
-Lý do giữ `role="list"` thay vì gộp hẳn vào `body`: §5 S4 cấm robot đọc bullet nguyên
-văn — S4 cần biết mẩu này là danh sách để diễn đạt lại thành lời nói.
-
-Lý do **gom cả bó vào một mẩu** thay vì tách từng dòng: mỗi dòng lẻ chỉ vài chữ, không
-dòng nào trả lời được câu hỏi. Cả bó mới là một câu trả lời — ví dụ trang 40 có
-`"Deadline: 25/10/2025"` nằm chung với hai dòng khác về bài tập.
-
-### `ParsedTable` — bảng
-
-`cells` (mảng 2 chiều) · `n_rows` · `n_cols` · `header_rows`
-
-Có **hai** `provenance` vì hai nguồn khác nhau:
-- `provenance` — chữ trong ô, từ text layer, **đúng**
-- `structure_provenance` — lưới do TableFormer dựng, **có thể sai**
-
-`rows_as_chunks()` cắt mỗi hàng một chunk và **lặp header ở mỗi hàng** (luật §5 S5).
-
-### `ParsedImage` — ảnh
-
-| field | nghĩa |
-|---|---|
-| `description` | lời VLM tả. Đây là **toàn bộ** nội dung của mẩu ảnh |
-| `described_by` | model nào tả, vd `gemini-2.5-flash-lite@api` |
-| `prompt_hash` | prompt nào sinh ra — đổi prompt thì mô tả cũ lạc hậu |
-| `skip_reason` | vì sao không gọi API: `area_below_threshold` / `decorative` / `not_described` |
-| `is_decorative` | logo, hoạ tiết → không có nội dung |
-| `classification` | `[("line_chart", 0.52), …]` |
-
-**`skip_reason` là thứ docling không lưu mà ta cần.** Nhìn `description=None` phải biết
-được là *chưa gọi* hay *gọi mà fail* — hai ca xử lý khác hẳn nhau.
-
-### `ParsedPage` — một trang
-
-`title` · `section_id` · `blocks` · `furniture` · `page_hash`
-
-| thuộc tính tính sẵn | nghĩa |
-|---|---|
-| `images` / `tables` / `paragraphs` | lọc theo loại |
-| `body_text` | nối mọi mẩu thành một chuỗi |
-| `running_header` | thanh tiêu đề chạy ở đỉnh — nguồn duy nhất dựng được chương |
-| `page_label` | số trang in trên giấy, `"11 / 40"` — đối chiếu với `page_no` |
-| `is_text_starved` | ≤1 mẩu chữ → trang sống chết nhờ mô tả ảnh |
-
-### `SectionSpan` — một chương
-
-`title` · `start_page` · `end_page` · `source` · `confidence`
-
-**Được SUY RA, không phải parse ra** — nên bắt buộc khai `source` và `confidence`.
-`source` ∈ `page_header` / `title_bbox` / `outline_page` / `manual`.
-
-### `Flag` — chỗ cần người xem
-
-`kind` · `page_no` · `block_id` · `detail` · `severity`
-
-| kind | nghĩa |
-|---|---|
-| `header_title_mismatch` | thanh header nói một đằng, tiêu đề trang một nẻo |
-| `empty_page` | không chữ, cũng không mô tả ảnh → vào KB gần như rỗng |
-| `image_not_described` | ảnh **trên** ngưỡng mà không tả được |
-| `page_label_mismatch` | số trang in trên giấy lệch số trang thật |
-| `no_sections` | không dựng được chương |
-
----
-
-## 5. Ví dụ thật — trang 11 của `3_DataVisualization`
-
-```
-title: Đồ thị dạng đường          thuộc: sec_00 (p9–15)
-
-blocks:
-   p011.b01  paragraph   1.89%   text_layer   Đồ thị dạng đường
-   p011.b02  image      43.43%   vlm          Đoạn mã Python và biểu đồ đường...
-   p011.b03  image       0.58%   vlm          (rỗng — thanh PowerPoint, bỏ qua)
-
-furniture:
-   Đồ thị dạng đường · VH Thư · Nhập môn Khoa học dữ liệu · 11 / 40
-```
-
-Trang này **chỉ có 1 mẩu chữ**, trùng tiêu đề với 6 trang khác cùng chương. Thứ phân
-biệt nó là mô tả ảnh — `plt.savefig('line_graph.png')` chỉ tồn tại nhờ tầng VLM.
-Đây chính là insight §1 CLAUDE.md: slide là bản nén mất mát.
-
----
-
-## 6. Vì sao giữ `furniture`
-
-Nhìn thì như rác — 152/252 mẩu chữ của deck này là header/footer lặp. Nhưng:
-
-1. **`page_header` là nguồn chương duy nhất.** docling cho `level=1` trên cả 43 tiêu đề,
-   không có phân cấp nào. Thanh header chạy mới gom được trang thành chương.
-2. **Bắt lỗi bộ slide.** So header với tiêu đề ra ngay 3 trang lệch (p38–40).
-3. **`page_footer` kiểm toàn vẹn.** `"11 / 40"` đối chiếu với `page_no` → biết có sót trang.
-4. **Chứng minh được là đã loại**, chứ không phải quên loại: `len(blocks) + len(furniture)`
-   phải khớp tổng mẩu của trang.
-
-Giữ thì gần như miễn phí; bỏ rồi muốn lấy lại phải parse lại, mà parse lại **tốn tiền API**.
-
----
-
-## 7. Dùng
-
-```python
-import json
 from parsing.models import ParsedDocument
 
-doc = ParsedDocument.model_validate(json.load(open("out/parsed/xxx.json", encoding="utf-8")))
+doc = ParsedDocument.model_validate_json(open("out/parsed/xxx.json", encoding="utf-8").read())
+doc.page(11)                  # trang 11
+doc.section_of(11)            # thuộc chương nào
+doc.pages_in("sec_00")        # chương gồm trang nào
 
-doc.page(11)                  # lấy trang 11
-doc.section_of(11)            # trang 11 thuộc chương nào
-doc.pages_in("sec_00")        # chương sec_00 gồm trang nào
-doc.iter_blocks()             # duyệt mọi mẩu của cả tài liệu
-
-page = doc.page(11)
-page.images                   # ảnh của trang
-page.paragraphs               # mẩu chữ của trang
-page.is_text_starved          # trang này ít chữ quá không
-[b.embed_text() for b in page.blocks]
+for b in doc.page(11).blocks:
+    b.content, b.polygon, b.provenance
 ```
 
-Sinh ra:
+Mấy luật dễ quên:
+
+- **Bó gạch đầu dòng là MỘT block** `role="list"`, các dòng ngăn bằng xuống dòng. Dòng lẻ
+  chỉ vài chữ, không trả lời được câu hỏi nào; S4 cần biết đây là danh sách để không đọc
+  bullet nguyên văn.
+- **Bảng có hai `provenance`**: chữ trong ô từ text layer (đúng), lưới do TableFormer dựng
+  (`structure_provenance`, có thể sai).
+- **Ảnh `content: null` phải biết VÌ SAO** — *chưa gọi* hay *gọi mà fail* xử lý khác hẳn nhau.
+- **`sections` được SUY RA**, không parse ra — nên bắt buộc khai `source` + `confidence`.
+- **Toạ độ `.pptx`**: docling gắn nhãn `BOTTOMLEFT` nhưng số thật đo từ ĐỈNH. `from_docling`
+  không tin nhãn với `.pptx` — tin là lật trục y (đo được ở `tetnguyendan` p1).
+
+---
+
+## 4. Vì sao giữ `furniture`
+
+152/252 mẩu chữ của `3_datavisualization` là header/footer lặp, nhìn như rác. Nhưng:
+
+1. **Thanh header chạy là nguồn chương duy nhất** — docling cho `level=1` trên mọi tiêu đề.
+2. **Bắt lỗi bộ slide** — header lệch tiêu đề ra ngay 3 trang (p38–40).
+3. **Số trang in trên slide** (`"11 / 40"`) đối chiếu `page_no` → biết có sót trang.
+
+Không đem vào KB, nhưng bỏ rồi muốn lấy lại phải parse lại — tốn tiền API.
+
+---
+
+## 5. Cờ
+
+| `kind` | nghĩa |
+|---|---|
+| `header_title_mismatch` | header nói một đằng, tiêu đề trang một nẻo — cũng là tín hiệu trang bài tập |
+| `empty_page` | không chữ, không mô tả ảnh → vào KB gần như rỗng |
+| `image_not_described` | ảnh **trên** ngưỡng mà không tả được |
+| `page_label_mismatch` | số trang in lệch số trang thật |
+| `no_sections` | không dựng được chương (deck không có thanh header) |
+
+---
+
+## 6. Chạy
 
 ```powershell
-.\.venv\Scripts\python.exe src\parsing\cli.py `
-  "out\parse_api\<ten>__gemini-2.5-flash-lite.json" `
-  --vlm-model gemini-2.5-flash-lite -o out\parsed\<ten>.json
+# ① docling + VLM mô tả ảnh (gọi API)
+.venv\Scripts\python.exe scripts\parse_api.py data\raw\<ten>.pptx
+
+# ② ra cấu trúc của mình — ghi CẢ <ten>.json lẫn <ten>.compact.json
+.venv\Scripts\python.exe src\parsing\cli.py "out\parse_api\<ten>.json" -o out\parsed\<ten>.json
+
+# xem một trang
+.venv\Scripts\python.exe src\parsing\cli.py out\parsed\<ten>.json --page 9-11
 ```
 
-Exit code `1` khi có cờ mức `error` — để CI bắt được. Parse vẫn thành công.
+Bước ② nhận cả file đã parse — chạy lại để làm mới bản gọn mà không cần docling.
+File vá tay `data/patches/<ten>.json` tự được áp nếu có.
+Exit code `1` khi có cờ mức `error` — để CI bắt. Parse vẫn thành công.
+
+```
+docling .json ─► from_docling.py   theo body.children → thứ tự đọc; đổi toạ độ; tách body/furniture
+              ─► patch.py          vá tay (nếu có)
+              ─► sections.py       thanh header → chương
+              ─► flags.py          soi luật → cờ
+              ─► cli.py            ghi <ten>.json + <ten>.compact.json  ─► S5 KB
+```
 
 ---
 
-## 8. Dòng chảy
+## 7. Số đã kiểm — chạy lại phải ra đúng, lệch là có lỗi
 
-```
-PDF ──docling──► file .json
-                    │
-                    ├─ from_docling.py   đi theo body.children → đúng thứ tự đọc
-                    │                    đổi toạ độ, tách body/furniture
-                    ├─ sections.py       đọc page_header → các chương
-                    ├─ flags.py          soi 4 luật → danh sách cờ
-                    └─ cli.py            gói lại, ghi ra JSON
-                                              │
-                                              ▼
-                                         S5 KB Construction
-```
-
-Mỗi bước nhận `ParsedDocument`, trả `ParsedDocument`. Chạy riêng từng bước được, dừng ở
-đâu cũng ghi ra file đọc lại được (§9).
-
----
-
-## 9. Số đã kiểm — `3_DataVisualization.pdf`
-
-Chạy lại phải ra đúng mấy số này, lệch là có lỗi:
-
-| | |
-|---|---|
-| trang | 40 |
-| tái dựng đủ mẩu chữ | 54 paragraph + 46 dòng bullet + 152 furniture = **252** |
-| ảnh | 71, mô tả được 27 (1 cái trả `DECORATIVE`) |
-| chương | 7, chương đầu p9–15 |
-| đối chiếu mục lục | 7/7 → confidence 0.95 |
-| cờ | 8 `empty_page` + 3 `header_title_mismatch` |
+| | `3_datavisualization` (.pdf) | `tetnguyendan` (.pptx) |
+|---|---|---|
+| trang | 40 | 10 |
+| block body | 54 đoạn + 11 bó bullet + 71 ảnh (+2 vá tay) | 43 đoạn + 15 ảnh |
+| furniture | 152 | 0 |
+| ảnh có `content` (vào KB) | 27 — VLM tả 28, 1 cái là `decorative` | 6 |
+| chương | 7, chương đầu p9–15, khớp mục lục 7/7 | 0 — không có thanh header |
+| cờ | 7 `empty_page` + 3 `header_title_mismatch` | 1 `no_sections` |
+| file đầy đủ → gọn | 362 KB → 73 KB | 68 KB → 20 KB |
 
 Ca âm tính — `Chương1.pdf`: chỉ 1/12 trang có thanh header → trượt luật phủ 60% →
 **0 chương**, đúng như mong đợi (không đoán bừa).

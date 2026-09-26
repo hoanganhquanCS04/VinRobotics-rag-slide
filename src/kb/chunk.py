@@ -98,7 +98,7 @@ def _provenance(blocks) -> dict[str, int]:
 
 def _page_chunks(doc: ParsedDocument, page: ParsedPage, max_tokens: int) -> list[KBChunk]:
     """Chunk chính của trang. Quá dài thì cắt theo ranh giới block."""
-    blocks = [b for b in page.blocks if b.embed_text()]
+    blocks = [b for b in page.blocks if b.content]
     if not blocks:
         return []
 
@@ -107,7 +107,7 @@ def _page_chunks(doc: ParsedDocument, page: ParsedPage, max_tokens: int) -> list
     ctype = "section_divider" if divider else "content"
 
     def make(idx: int | None, bs) -> KBChunk:
-        raw = "\n".join(b.embed_text() or "" for b in bs)
+        raw = "\n".join(b.content or "" for b in bs)
         enriched = prefix + raw
         suffix = "" if idx is None else f".{idx}"
         return KBChunk(
@@ -135,7 +135,7 @@ def _page_chunks(doc: ParsedDocument, page: ParsedPage, max_tokens: int) -> list
     cur: list = []
     cur_tok = count_tokens(prefix)
     for b in blocks:
-        t = count_tokens(b.embed_text() or "")
+        t = count_tokens(b.content or "")
         if cur and cur_tok + t > max_tokens:
             out.append(make(len(out) + 1, cur))
             cur, cur_tok = [], count_tokens(prefix)
@@ -154,7 +154,7 @@ def _image_chunks(doc: ParsedDocument, page: ParsedPage) -> list[KBChunk]:
     'code + biểu đồ kết quả'. Gộp một vector thì bình quân hai chủ đề, loãng.
     Tách vector nhưng CÙNG trỏ về page_no nên điều hướng không đổi.
     """
-    imgs = [b for b in page.images if b.was_described]
+    imgs = [b for b in page.images if b.content]
     if len(imgs) < 2:          # 1 ảnh thì chunk trang đã đủ, không nhân bản
         return []
 
@@ -163,7 +163,7 @@ def _image_chunks(doc: ParsedDocument, page: ParsedPage) -> list[KBChunk]:
     sec = doc.section_of(page.page_no)
     out: list[KBChunk] = []
     for im in imgs:
-        raw = f"{title}\n{im.description}" if title else (im.description or "")
+        raw = f"{title}\n{im.content}" if title else (im.content or "")
         enriched = prefix + raw
         out.append(
             KBChunk(
@@ -178,7 +178,7 @@ def _image_chunks(doc: ParsedDocument, page: ParsedPage) -> list[KBChunk]:
                 text_enriched=enriched,
                 token_count=count_tokens(enriched),
                 block_ids=[im.id],
-                provenance={"vlm": 1},
+                provenance={im.provenance.value: 1},   # ảnh người sửa -> "manual"
             )
         )
     return out

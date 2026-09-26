@@ -84,7 +84,7 @@ mức "mô tả slide".
 🚫 S1   BỎ — gộp vào S0                            xem §5
 🚫 S3   BỎ ở v0 — align vào chính mình thì vô nghĩa
 ⬜ S2   slide_type + time_budget  luật, chưa code
-⬜ S4   kịch bản                  chưa có dòng nào
+🟡 S4   kịch bản                  src/scenario/, gpt-5-mini — mới chạy thử 4 trang
 ⬜ S6b  TTS + pronunciation.json  chưa có dòng nào
 ⬜ S7   người duyệt phần bị flag  chưa có dòng nào
 ```
@@ -239,12 +239,19 @@ Luật đầy đủ của S3 giữ lại ở đây cho v1, khi có `source/*.pdf
 
 ### S4
 
+Spec đầy đủ: [docs/spec/scenario.md](docs/spec/scenario.md).
+
+- **Chạy song song theo SECTION, tuần tự TRONG section** — trang sau đọc kịch bản trang
+  trước cùng section để không lặp ý (7 trang liền cùng tên "Đồ thị dạng đường"). Đây là
+  thứ thay cho `message` đã bỏ.
+- **Không có `time_budget`** (đã bỏ) → trần số câu theo `slide_type` là cái phanh duy nhất.
+  Pass 2 thành **pass sửa lỗi validate**, chỉ chạy cho trang trượt.
+- **`syllables` do CODE tính** theo `pronunciation.json`, không để LLM tự khai.
 - **Input mỗi trang: nội dung CHÍNH TRANG ĐÓ** (`KBChunk` của trang) + `title` trang
   trước/sau + `slide_type`. **KHÔNG nhồi cả deck vào prompt.**
 - Mọi câu `content` phải có `grounding`; `null` → flag đỏ (NT4 §2)
 - `slide_type` quyết định độ dài: `section_divider` thì một câu chuyển là xong,
   `title`/`agenda` cũng ngắn. Chỉ `content` mới viết dài.
-- Pass 2 cân thời lượng theo `time_budget` của S2
 - Tiếng Việt: **190–210 âm tiết/phút**. Đếm âm tiết, KHÔNG đếm từ,
   và đếm **theo `pronunciation.json`** (viết tắt đọc thế nào thì đếm thế ấy)
 - **Tự nhiên — 7 đòn bẩy, xếp theo tác động:**
@@ -332,9 +339,29 @@ input → regex fast-path ──(khớp)──→ goto_slide()          [~5ms]
     **top-3** → LLM chỉ VERIFY và CHỌN trong 3, kèm lý do
   - **Nhánh điều hướng phải TẮT lọc trang phân mục**: hỏi "quay lại phần đồ thị ba chiều"
     thì trang MỞ CHƯƠNG mới là đáp án đúng (`--no-filter`)
-  - ⚠️ **Reranker chưa chốt.** `bge-reranker-v2-m3` là model local 2.2 GB, ngược với
-    quyết định "không chạy model local nào" ở §12. Chưa có reranker thì chưa dựng được
-    confidence gate, và §11 `harmful_jump` không đo được. Phải quyết trước khi làm R2.
+  - **Reranker: ĐÃ CHỐT là gọi QUA API**, không chạy local — cùng lý do đã bỏ `bge-m3`.
+    Đo được trên endpoint đang dùng (`api.yescale.io`):
+
+    ```
+    POST /rerank      HTTP 403  capability_not_allowed
+                                "This API key is not allowed to use the rerank capability"
+    GET  /models      98 model, KHÔNG có model rerank nào
+    ```
+
+    **403 chứ không phải 404** → cổng CÓ đường rerank, chỉ là key chưa được bật quyền.
+    Đây là việc của tài khoản, không phải việc kỹ thuật. Bật xong là cắm vào chạy.
+  - ⚠️ **Trong lúc chờ bật quyền — KHÔNG có confidence gate thật.** Hệ quả phải chấp nhận
+    và ghi rõ, đừng lờ đi:
+
+    ```
+    §11 harmful_jump < 2%    KHÔNG ĐO ĐƯỢC  — không có điểm calibrate được
+    §10 cấm dùng điểm LLM tự khai làm gate   — vẫn cấm, không nới
+    ```
+
+    Tạm thời dùng **biên RRF** (`rrf(top1) − rrf(top2)`) làm phanh, đặt ngưỡng **rộng tay
+    về phía hỏi lại**: thà hỏi nhiều còn hơn nhảy sai. Phải khai rõ trong config là
+    `calibrated: false`, và thay bằng điểm reranker ngay khi có. Biên RRF **không phải**
+    xác suất, chỉ là thứ tự — xem [search.md §4](docs/spec/search.md).
   - Trượt ở tầng truy xuất thì tầng LLM KHÔNG cứu được → theo dõi `recall@k`,
     dưới 95% thì nới `k`
 - **R3 tách đôi để gỡ vòng tròn** (muốn truy xuất cần query đã rewrite, muốn rewrite
@@ -380,8 +407,10 @@ Chưa dựng Qdrant, chưa có tầng shared/per-deck. Mọi thứ là file JSON
 data/raw/<ten>.pdf                        file gốc — VỪA là deck VỪA là KB
 data/patches/<ten>.json                   nội dung gõ tay cho trang parser bỏ sót
 data/eval/queries.json                    câu hỏi có nhãn để đo retrieval
-out/parse_api/<ten>__<model>.{md,json}    docling thô  (scripts/parse_api.py)
+out/parse_api/<ten>.{md,json}             docling thô  (scripts/parse_api.py, .pdf hoặc .pptx)
+.env  VLM_MODEL · LLM_MODEL               tên model dùng — sửa ở đây, KHÔNG sửa trong code
 out/parsed/<doc_id>.json                  ParsedDocument (src/parsing/cli.py)
+out/parsed/<doc_id>.compact.json          bản GỌN để người đọc, tự ghi kèm — pipeline KHÔNG đọc
 out/kb/<doc_id>.chunks.json               KBChunk[]     (src/kb/cli.py)
 out/kb/<doc_id>__<model_id>.vectors.npy   ma trận vector + .vectors.json (thứ tự hàng)
 out/kb/.embed_cache/<model>/<sha1>.npy    cache theo hash nội dung
@@ -473,7 +502,7 @@ synth lại câu chứa từ đó; lệch timing > 15% thì chạy lại pass 2 
 | Render PNG (v1)  | LibreOffice headless → PDF →`PyMuPDF` rasterize              |
 | Parse PDF nguồn | `PyMuPDF`, `unstructured` hoặc `docling` cho cây heading |
 | Embedding        | **v0: `text-embedding-3-small` qua API** (dense-only, 1536 chiều) · đích: `bge-m3` (dense + sparse 1 forward) |
-| Rerank           | `bge-reranker-v2-m3` — dùng cho cả R2 lẫn S3               |
+| Rerank           | **QUA API** — `bge-reranker-v2-m3` local đã loại (2.2 GB). Endpoint có `/rerank` nhưng key CHƯA được bật quyền — xem §6 |
 | Vector DB        | Qdrant (cần metadata filter tốt)                               |
 | Schema           | Pydantic v2                                                      |
 
@@ -564,7 +593,10 @@ XML · S3 Alignment suy biến nên bỏ qua · độ sâu trả lời giới h�
 embedding qua API **chỉ có dense, mất sparse** của `bge-m3` → phải bù bằng BM25 riêng,
 và tốn 719ms/câu hỏi thay vì 182ms (đo thật, xem [embedding.md §2](docs/spec/embedding.md))
 
-**Chưa có:** S2 · S4 kịch bản · S6b TTS · S7 duyệt · toàn bộ runtime R1–R7
+**Chưa có:** S6b TTS · S7 duyệt · toàn bộ runtime R1–R7 · S4 mới chạy thử 4/40 trang
+
+**Đang chờ bên ngoài:** quyền `rerank` trên API key (hiện 403 `capability_not_allowed`).
+Không có nó thì R2 chạy được nhưng **không có confidence gate calibrate được** — xem §6.
 
 ### v1 — đích
 

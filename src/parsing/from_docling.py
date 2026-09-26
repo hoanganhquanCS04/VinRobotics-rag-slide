@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from parsing.models import (
+    PAGE_NUMBER,
     AnyBlock,
     BBox,
     Layer,
@@ -46,10 +47,27 @@ _ROLE = {
     "section_header": "title",
     "title": "title",
     "caption": "caption",
+    "page_header": "header",
+    "page_footer": "footer",
 }
 _FURNITURE_LABELS = {"page_header", "page_footer"}
 _DECORATIVE_CLASSES = {"logo", "icon", "signature", "stamp"}
 _DECORATIVE_CONF = 0.9
+
+
+def _refine_role(b: ParsedParagraph) -> None:
+    """Hai vai trò docling không gán, suy bằng luật trên chữ.
+
+    links        >= nửa số dòng là URL (p38 của 3_datavisualization: 8/8 dòng)
+    page_number  mẩu furniture chỉ gồm "11 / 40" — docling gộp nó vào page_footer
+    """
+    if b.layer is Layer.FURNITURE:
+        if PAGE_NUMBER.fullmatch(b.text):
+            b.role = "page_number"
+        return
+    if b.role in ("body", "list") and b.lines:
+        if 2 * len(b.urls) >= len(b.lines):
+            b.role = "links"
 
 
 def _norm(s: str | None) -> str:
@@ -60,10 +78,18 @@ def _clamp(v: float) -> float:
     return 0.0 if v < 0.0 else (1.0 if v > 1.0 else v)
 
 
-def _bbox(prov: dict[str, Any], page_w: float, page_h: float) -> BBox:
-    """docling BOTTOMLEFT (t > b, đo từ đáy lên) -> TOPLEFT chuẩn hoá."""
+def _bbox(prov: dict[str, Any], page_w: float, page_h: float, *, is_pptx: bool = False) -> BBox:
+    """docling BOTTOMLEFT (t > b, đo từ đáy lên) -> TOPLEFT chuẩn hoá.
+
+    NGOẠI LỆ .pptx: backend pptx của docling gắn nhãn `BOTTOMLEFT` nhưng số thật đo từ
+    ĐỈNH xuống (EMU của python-pptx) — tin nhãn là lật trục y. Đo trên tetnguyendan p1:
+    "LỄ HỘI LỚN NHẤT NĂM" nằm trên "Tết Nguyên Đán" có t=2557462 < 3548062; lật theo nhãn
+    thì ra nằm DƯỚI. Không tin nhãn, chỉ lấy min/max.
+    """
     b = prov["bbox"]
-    if b.get("coord_origin", "BOTTOMLEFT").upper() == "BOTTOMLEFT":
+    if is_pptx:
+        top, bottom = b["b"], b["t"]
+    elif b.get("coord_origin", "BOTTOMLEFT").upper() == "BOTTOMLEFT":
         top, bottom = page_h - b["t"], page_h - b["b"]
     else:
         top, bottom = b["t"], b["b"]
@@ -98,7 +124,11 @@ def _walk(doc: dict[str, Any], node: dict[str, Any], seen: set[str]) -> Iterator
             continue
         seen.add(sref)
         yield item
-        if not sref.startswith("#/groups/"):      # group tự gom con ở bước sau
+        # Group `list` tự gom con ở bước sau (thành một ParsedParagraph role="list").
+        # Group KHÁC thì phải đi vào: docling đọc PPTX nhét MỖI SLIDE vào một group
+        # `chapter` — không đi vào là mất sạch chữ (đo được: 62 đoạn -> 0 khối).
+        # PDF chỉ có group `list` nên luồng PDF không đổi.
+        if not (sref.startswith("#/groups/") and item.get("label") == "list"):
             yield from _walk(doc, item, seen)
 
 
@@ -178,20 +208,22 @@ def _page_hash(page: ParsedPage) -> str:
     for b in list(page.blocks) + list(page.furniture):
         bb = b.bbox
         h.update(f"{b.kind}|{bb.l:.4f},{bb.t:.4f},{bb.r:.4f},{bb.b:.4f}|".encode())
-        h.update((b.embed_text() or "").encode("utf-8"))
+        h.update((b.content or "").encode("utf-8"))
     return h.hexdigest()[:16]
 
 
 def slugify_doc_id(stem: str) -> str:
     """Tên file docling -> doc_id sạch.
 
-        "3_DataVisualization (1)__gemini-2.5-flash-lite"  ->  "3_datavisualization"
+        "3_DataVisualization (1)"                         ->  "3_datavisualization"
+        "3_DataVisualization (1)__gemini-2.5-flash-lite"  ->  "3_datavisualization"  (tên cũ)
 
     `doc_id` chui vào MỌI `chunk_id`, mọi tên file vector, và sau này là tên collection
     Qdrant. Để nguyên tên file thô thì nó mang theo dấu cách, "(1)", và tên model VLM —
     ba thứ không liên quan gì tới danh tính tài liệu.
 
-    Cắt phần `__<model>` vì đó là dấu của scripts/parse_api.py, thuộc về CÁCH parse chứ
+    Bản cũ của scripts/parse_api.py gắn `__<model>` vào tên file; giờ đã bỏ, nhưng vẫn cắt
+    để file cũ ra đúng doc_id. Tên model thuộc về CÁCH parse chứ
     không thuộc về TÀI LIỆU. Đổi model VLM mà doc_id đổi theo thì chunk cũ thành mồ côi.
     """
     stem = stem.split("__", 1)[0]                       # bỏ dấu model VLM
@@ -215,6 +247,7 @@ def from_docling_json(
 
     # Không có OCR thì chữ chắc chắn từ text layer; có OCR thì không phân biệt được.
     text_prov = Provenance.OCR if do_ocr else Provenance.TEXT_LAYER
+    is_pptx = "presentationml" in ((raw.get("origin") or {}).get("mimetype") or "")
 
     sizes = {int(k): (v["size"]["width"], v["size"]["height"]) for k, v in raw["pages"].items()}
     pages = {no: ParsedPage(page_no=no, size_pt=wh) for no, wh in sorted(sizes.items())}
@@ -248,7 +281,7 @@ def from_docling_json(
                 if pg is None or pg not in pages:
                     continue
                 page_w, page_h = sizes[pg]
-                boxes = [_bbox(k["prov"][0], page_w, page_h) for k in kids]
+                boxes = [_bbox(k["prov"][0], page_w, page_h, is_pptx=is_pptx) for k in kids]
                 box = BBox(
                     l=min(x.l for x in boxes),
                     t=min(x.t for x in boxes),
@@ -284,7 +317,7 @@ def from_docling_json(
             if pg not in pages:
                 continue
             page_w, page_h = sizes[pg]
-            box = _bbox(prov[0], page_w, page_h)
+            box = _bbox(prov[0], page_w, page_h, is_pptx=is_pptx)
             bid, order = next_id(pg)
 
             layer = (
@@ -316,6 +349,9 @@ def from_docling_json(
             (pages[pg].furniture if layer is Layer.FURNITURE else pages[pg].blocks).append(block)
 
     for page in pages.values():
+        for b in list(page.blocks) + list(page.furniture):
+            if isinstance(b, ParsedParagraph):
+                _refine_role(b)
         page.title = next(
             (
                 b.text

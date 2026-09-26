@@ -24,10 +24,17 @@ File patch:
           "note": "docling bo sot code + bang mau",
           "add_blocks": [
             {"role": "body", "text": "...", "bbox": [l, t, r, b]}
-          ]
+          ],
+          "fix_images": {
+            "p015.b00": "mô tả đúng, người viết lại"
+          }
         }
       }
     }
+
+`fix_images` thay mô tả VLM tả SAI (vd ảnh Tết bị tả thành "mâm cỗ Trung Thu"). Key là
+`block_id` — lấy bằng `python src/parsing/cli.py out/parsed/<ten>.json --page N --full`.
+Chuỗi rỗng "" = ảnh trang trí, bỏ khỏi index. Ảnh sửa xong mang `provenance: "manual"`.
 """
 
 from __future__ import annotations
@@ -42,6 +49,7 @@ from parsing.models import (
     Flag,
     Layer,
     ParsedDocument,
+    ParsedImage,
     ParsedParagraph,
     Provenance,
 )
@@ -69,9 +77,9 @@ def find_patch(doc_id: str, patch_dir: str | Path = "data/patches") -> Path | No
 
 
 def apply_patch(doc: ParsedDocument, patch: dict[str, Any]) -> ParsedDocument:
-    """Thêm block vào trang. Sửa tại chỗ, trả về chính doc."""
+    """Thêm block / sửa mô tả ảnh. Sửa tại chỗ, trả về chính doc."""
     pages = patch.get("pages") or {}
-    n_block = 0
+    n_block = n_fix = 0
 
     for raw_no, spec in pages.items():
         page = doc.page(int(raw_no))
@@ -98,6 +106,20 @@ def apply_patch(doc: ParsedDocument, patch: dict[str, Any]) -> ParsedDocument:
             )
             n_block += 1
 
+        images = {b.id: b for b in page.blocks if isinstance(b, ParsedImage)}
+        for bid, desc in (spec.get("fix_images") or {}).items():
+            im = images.get(bid)
+            if im is None:
+                # block_id sai thì BÁO, không lờ đi — lờ đi là mô tả bịa vẫn nằm trong index
+                log.warning("  patch: trang %s khong co anh %s, bo qua", raw_no, bid)
+                continue
+            im.description = desc.strip() or None
+            im.is_decorative = not desc.strip()
+            im.provenance = Provenance.MANUAL
+            im.described_by = "nguoi"
+            im.skip_reason = None
+            n_fix += 1
+
         page.blocks.sort(key=lambda x: x.reading_order)
         # Vá xong thì hash đổi -> incremental build biết trang này khác rồi
         from parsing.from_docling import _page_hash
@@ -110,5 +132,6 @@ def apply_patch(doc: ParsedDocument, patch: dict[str, Any]) -> ParsedDocument:
                      detail=f"da va tay: {note}", severity="info")
             )
 
-    log.info("  patch: them %d block vao %d trang", n_block, len(pages))
+    log.info("  patch: them %d block, sua %d mo ta anh, tren %d trang",
+             n_block, n_fix, len(pages))
     return doc

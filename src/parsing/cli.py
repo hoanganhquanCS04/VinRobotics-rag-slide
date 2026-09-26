@@ -5,7 +5,7 @@ Nhận CẢ HAI loại file, tự nhận biết:
     .json thô của docling   -> parse thành ParsedDocument
     .json của ParsedDocument -> nạp lại để xem
 
-    # parse rồi ghi ra
+    # parse rồi ghi ra — kèm luôn out/parsed/<ten>.compact.json (bản gọn để đọc)
     python src/parsing/cli.py "out/parse_api/<ten>.json" -o out/parsed/<ten>.json
 
     # xem một trang
@@ -25,6 +25,7 @@ from pathlib import Path
 if __package__ in (None, ""):  # chạy thẳng file, không qua -m
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from parsing.compact import write_compact
 from parsing.flags import apply_flags
 from parsing.from_docling import from_docling_json
 from parsing.models import ParsedDocument, ParsedImage, ParsedParagraph, ParsedTable
@@ -34,6 +35,15 @@ from parsing.sections import apply_sections
 for _s in (sys.stdout, sys.stderr):
     if hasattr(_s, "reconfigure"):
         _s.reconfigure(encoding="utf-8", errors="replace")
+
+try:
+    import os
+
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+except ImportError:
+    pass
 
 log = logging.getLogger("parsing")
 
@@ -120,7 +130,7 @@ def show_pages(doc: ParsedDocument, pages: list[int], full: bool) -> None:
             log.info("    %-10s %-12s %6.2f%% %-10s %s",
                      b.id, kind, b.bbox.area_ratio * 100, b.provenance.value, _cut(body, full))
 
-        furn = " · ".join((b.embed_text() or "") for b in page.furniture)
+        furn = " · ".join((b.content or "") for b in page.furniture)
         if furn:
             log.info("    furniture: %s", _cut(furn, full, 90))
 
@@ -166,7 +176,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--full", action="store_true", help="in du, khong cat chu")
     ap.add_argument("--ocr", action="store_true",
                     help="file nay parse voi OCR bat -> chu khai la provenance=ocr")
-    ap.add_argument("--vlm-model", default=None)
+    ap.add_argument("--vlm-model", default=os.environ.get("VLM_MODEL"),
+                    help="mac dinh VLM_MODEL trong .env — ghi vao ParsedDocument.parser")
     ap.add_argument("--area-threshold", type=float, default=0.05)
     ap.add_argument("--source-pdf", default=None)
     ap.add_argument("--patch", default=None,
@@ -208,6 +219,8 @@ def main(argv: list[str] | None = None) -> int:
         out.write_text(doc.model_dump_json(indent=2), encoding="utf-8")
         log.info("")
         log.info("ghi -> %s (%d KB)", out, out.stat().st_size // 1024)
+        small = write_compact(doc, out)
+        log.info("ghi -> %s (%d KB, ban gon de doc)", small, small.stat().st_size // 1024)
 
     n_err = sum(1 for f in doc.flags if f.severity == "error")
     if n_err and not args.page:

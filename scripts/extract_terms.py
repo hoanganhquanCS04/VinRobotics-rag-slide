@@ -88,7 +88,7 @@ def count_syllables(say: str) -> int:
 # không nói "pi eo ti chấm savefig".
 ALIAS = {"plt", "np", "mpl", "pd", "rng", "ccrs", "crs", "ax", "fig", "sns", "cv2"}
 # Mảnh URL
-URLISH = {"www", "com", "vn", "html", "htm", "http", "https", "org", "net", "png", "jpg", "csv"}
+URLISH = {"www", "com", "vn", "html", "htm", "http", "https", "org", "net", "png", "jpg"}  # KHONG co "csv": no la viet tat that, bo nham o lan dau
 URL_RE = re.compile(r"https?://\S+|www\.\S+|[\w.-]+\.(?:com|vn|org|net)", re.I)
 
 
@@ -118,9 +118,16 @@ def harvest(text: str) -> tuple[Counter, Counter]:
              and not HEX.match(w) and w.lower() not in title_words]
 
     dotted = Counter(w for w in words if "." in w)
+    # Chữ IN HOA chỉ là VIẾT TẮT nếu trong tài liệu nó CHƯA TỪNG xuất hiện ở dạng thường.
+    # Deck tiếng Anh viết hoa cả tiêu đề ("THE CAUSE OF...") -> THE có dạng "the" ở chỗ
+    # khác nên là chữ thường; CSV thì không bao giờ viết thường. Đo trên Gen_gap.pptx:
+    # không có luật này thì ra THE->"tê hát e", OF->"o ép", CAUSE->"xê a u ét e".
+    seen_lower = {w.lower() for w in words if not w.isupper()}
     upper = Counter(w for w in words
                     if "." not in w and w.isupper() and w.lower() not in URLISH
-                    and not re.fullmatch(r"[0-9A-F]+", w))   # mảnh hex còn sót
+                    and w.lower() not in seen_lower
+                    and not re.fullmatch(r"[IVXLC]+", w)          # số La Mã: II, III, IV
+                    and not re.fullmatch(r"[0-9A-F]+", w))        # mảnh hex còn sót
     return dotted, upper
 
 

@@ -20,6 +20,12 @@ from typing import Annotated, Iterator, Literal
 from pydantic import BaseModel, Field, computed_field
 
 
+# Một dòng chỉ gồm một URL — "https://moso.vn/" · "www.abc.com/x"
+URL_LINE = re.compile(r"(?:https?://|www\.)\S+")
+# Số trang in trên slide — "11 / 40" · "11 of 40"
+PAGE_NUMBER = re.compile(r"\s*\d+\s*(?:/|of)\s*\d+\s*")
+
+
 class Provenance(str, Enum):
     """Nội dung này ở đâu ra — quyết định tin được bao nhiêu (NT2)."""
 
@@ -81,17 +87,16 @@ class Block(BaseModel):
     provenance: Provenance
 
     @property
-    def is_body(self) -> bool:
-        return self.layer is Layer.BODY
-
-    @property
-    def is_trustworthy(self) -> bool:
-        """NT2: bản đúng 100% — từ text layer PDF, hoặc người gõ tay ở S7."""
-        return self.provenance in (Provenance.TEXT_LAYER, Provenance.MANUAL)
-
-    def embed_text(self) -> str | None:
-        """Chữ để đem đi embed. Mỗi lớp con tự định nghĩa (đa hình)."""
+    def content(self) -> str | None:
+        """Nội dung dạng chữ — thứ đem đi chunk làm KB. Mỗi lớp con tự định nghĩa."""
         raise NotImplementedError
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def polygon(self) -> list[tuple[float, float]]:
+        """4 góc theo chiều kim đồng hồ từ trên-trái, toạ độ [0,1]. Tính từ bbox."""
+        b = self.bbox
+        return [(b.l, b.t), (b.r, b.t), (b.r, b.b), (b.l, b.b)]
 
 
 class ParsedParagraph(Block):
@@ -101,23 +106,38 @@ class ParsedParagraph(Block):
     nhau bằng xuống dòng, lấy ra bằng `.lines`. Lý do giữ `role` thay vì gộp hẳn
     vào `body`: §5 S4 cấm robot đọc bullet nguyên văn, S4 cần biết mẩu này là
     danh sách để diễn đạt lại thành lời nói.
+
+    `role` nói robot đối xử với mẩu chữ thế nào — `kind` vẫn là "paragraph" vì nó vẫn là chữ:
+
+        body · title · list · caption      nội dung (layer=body)
+        links                              phần lớn dòng là URL -> KHÔNG đọc URL thành tiếng
+        header · footer · page_number      khung trang (layer=furniture)
     """
 
     kind: Literal["paragraph"] = "paragraph"
     text: str
     text_raw: str = ""          # bản chưa gỡ marker/khoảng trắng thừa
-    role: Literal["title", "body", "list", "caption"] = "body"
+    role: Literal[
+        "title", "body", "list", "caption", "links", "header", "footer", "page_number"
+    ] = "body"
 
     @property
     def lines(self) -> list[str]:
-        """Tách thành từng dòng. Có nghĩa khi `role="list"`."""
+        """Tách thành từng dòng. Có nghĩa khi `role="list"` / `"links"`."""
         return [ln.strip() for ln in self.text.split("\n") if ln.strip()]
+
+    @property
+    def urls(self) -> list[str]:
+        """Các dòng là URL. Có nghĩa khi `role="links"`."""
+        return [ln for ln in self.lines if URL_LINE.fullmatch(ln)]
 
     @property
     def n_chars(self) -> int:
         return len(self.text)
 
-    def embed_text(self) -> str | None:
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def content(self) -> str | None:
         return self.text or None
 
 
@@ -149,10 +169,22 @@ class ParsedTable(Block):
             out.append(" | ".join(pairs) if pairs else " | ".join(row))
         return out
 
-    def embed_text(self) -> str | None:
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def content(self) -> str | None:
+        """Bảng dạng markdown, sinh từ `cells` — `cells` mới là bản gốc."""
         if not self.cells:
             return None
-        return "\n".join(" | ".join(r) for r in self.cells)
+
+        def row(r: list[str]) -> str:
+            cs = [c.replace("|", "\\|").replace("\n", " ") for c in r]
+            return "| " + " | ".join(cs) + " |"
+
+        n_head = max(1, self.header_rows)
+        lines = [row(r) for r in self.cells[:n_head]]
+        lines.append("|" + "---|" * len(self.cells[0]))
+        lines += [row(r) for r in self.cells[n_head:]]
+        return "\n".join(lines)
 
 
 class ParsedImage(Block):
@@ -186,7 +218,9 @@ class ParsedImage(Block):
             return False
         return self.bbox.area_ratio >= 0.05
 
-    def embed_text(self) -> str | None:
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def content(self) -> str | None:
         return self.description if self.was_described else None
 
 
@@ -221,15 +255,17 @@ class ParsedPage(BaseModel):
         return [b for b in self.blocks if isinstance(b, ParsedParagraph)]
 
     @property
-    def body_text(self) -> str:
-        parts = [t for b in self.blocks if (t := b.embed_text())]
-        return "\n".join(parts)
-
-    @property
     def running_header(self) -> str | None:
-        """Thanh tiêu đề chạy ở đỉnh trang — nguồn duy nhất dựng được chương."""
-        for b in self.furniture:
-            if isinstance(b, ParsedParagraph) and b.bbox.center[1] < 0.15 and b.text:
+        """Thanh tiêu đề chạy ở đỉnh trang — nguồn duy nhất dựng được chương.
+
+        Tin nhãn `role="header"` của docling trước; không có nhãn thì mới đoán theo vị trí.
+        """
+        paras = [b for b in self.furniture if isinstance(b, ParsedParagraph) and b.text]
+        for b in paras:
+            if b.role == "header":
+                return b.text
+        for b in paras:
+            if b.bbox.center[1] < 0.15:
                 return b.text
         return None
 
@@ -237,9 +273,7 @@ class ParsedPage(BaseModel):
     def page_label(self) -> str | None:
         """Số trang IN TRÊN GIẤY ('11 / 40'), để đối chiếu với page_no."""
         for b in self.furniture:
-            if isinstance(b, ParsedParagraph) and re.fullmatch(
-                r"\s*\d+\s*(?:/|of)\s*\d+\s*", b.text
-            ):
+            if isinstance(b, ParsedParagraph) and PAGE_NUMBER.fullmatch(b.text):
                 return b.text.strip()
         return None
 

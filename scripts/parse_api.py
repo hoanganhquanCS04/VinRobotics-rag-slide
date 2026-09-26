@@ -28,6 +28,12 @@ os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 from dotenv import load_dotenv
 
+import sys
+
+for _s in (sys.stdout, sys.stderr):      # console Windows mặc định cp1252 -> chữ Việt làm sập --help
+    if hasattr(_s, "reconfigure"):
+        _s.reconfigure(encoding="utf-8", errors="replace")
+
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 for noisy in (
     "httpx",
@@ -45,6 +51,7 @@ for noisy in (
 log = logging.getLogger("parse_api")
 
 ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(ROOT / ".env")        # VLM_MODEL, OPENAI_API_KEY, OPENAI_BASE_URL
 T_START = time.perf_counter()  # gồm cả thời gian nạp model local, không chỉ convert
 
 
@@ -61,8 +68,9 @@ def page_range(spec: str | None, total: int) -> tuple[int, int]:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("pdf")
-    ap.add_argument("--model", default="gemini-2.5-flash-lite")
+    ap.add_argument("pdf", help=".pdf hoac .pptx")
+    ap.add_argument("--model", default=os.environ.get("VLM_MODEL", "gemini-2.5-flash-lite"),
+                    help="mac dinh lay VLM_MODEL trong .env")
     ap.add_argument("--pages", default=None, help="'1-4' | '7' | bỏ trống = cả file")
     # Hai cờ dưới là cách GỌI API, không phải tham số pipeline. Default của docling
     # (concurrency=1, timeout=20s) sinh ra để dùng với server local, chạy qua mạng
@@ -82,19 +90,66 @@ def main() -> None:
     if not key:
         raise SystemExit("thiếu OPENAI_API_KEY trong .env")
 
+    from docling.datamodel.base_models import InputFormat
+    from docling.datamodel.pipeline_options import (
+        ConvertPipelineOptions,
+        PdfPipelineOptions,
+        PictureDescriptionApiOptions,
+    )
+    from docling.document_converter import (
+        DocumentConverter,
+        PdfFormatOption,
+        PowerpointFormatOption,
+    )
+
+    prompt = (ROOT / "prompts" / "s5_picture_desc.md").read_text(encoding="utf-8")
+    vlm = PictureDescriptionApiOptions(
+        url=f"{base}/chat/completions",
+        headers={"Authorization": f"Bearer {key}"},
+        params={"model": args.model, "temperature": 0.0},
+        prompt=prompt,
+        timeout=args.timeout,
+        concurrency=args.concurrency,
+        provenance=f"{args.model}@api",
+    )
+
+    is_pptx = pdf.suffix.lower() == ".pptx"
+    if is_pptx:
+        # PPTX: docling đọc thẳng XML (SimplePipeline) — KHÔNG có layout model, KHÔNG vẽ
+        # slide ra ảnh. Hệ quả đo được trên Gen_gap.pptx (deck Canva):
+        #   - chỉ ẢNH RASTER mới được VLM tả; hình VECTOR (freeform) bị bỏ qua hết
+        #   - không có nhãn title / page_header -> không dựng được chương từ header
+        #   - mỗi slide là một group `chapter` (from_docling phải đi vào group)
+        from pptx import Presentation
+
+        total = len(Presentation(str(pdf)).slides)
+        lo, hi = 1, total
+        if args.pages:
+            log.warning("--pages khong ap dung cho .pptx, parse ca file")
+        popts = ConvertPipelineOptions()
+        popts.enable_remote_services = True
+        popts.do_picture_description = True
+        popts.picture_description_options = vlm
+        log.info("%s | %d slide | PPTX (doc XML, khong layout model) | VLM=%s qua %s",
+                 pdf.name, total, args.model, base)
+        conv = DocumentConverter(format_options={
+            InputFormat.PPTX: PowerpointFormatOption(pipeline_options=popts)})
+        t0 = time.perf_counter()
+        res = conv.convert(str(pdf))
+        dt = time.perf_counter() - t0
+    else:
+        res, dt, total, lo, hi = run_pdf(pdf, args, vlm, PdfPipelineOptions,
+                                         DocumentConverter, PdfFormatOption, InputFormat)
+
+    doc = res.document
+    finish(doc, res, dt, total, lo, hi, pdf, args)
+
+
+def run_pdf(pdf, args, vlm, PdfPipelineOptions, DocumentConverter, PdfFormatOption, InputFormat):
     import pypdfium2 as pdfium
 
     total = len(pdfium.PdfDocument(str(pdf)))
     lo, hi = page_range(args.pages, total)
-
-    from docling.datamodel.base_models import InputFormat
-    from docling.datamodel.pipeline_options import (
-        PdfPipelineOptions,
-        PictureDescriptionApiOptions,
-    )
-    from docling.document_converter import DocumentConverter, PdfFormatOption
-
-    prompt = (ROOT / "prompts" / "s5_picture_desc.md").read_text(encoding="utf-8")
 
     opts = PdfPipelineOptions()  # <- default của docling, không đụng vào
     # Ngoại lệ duy nhất với default. PDF ở đây export từ PowerPoint nên đã có text
@@ -105,29 +160,21 @@ def main() -> None:
     opts.do_ocr = False
     opts.enable_remote_services = True
     opts.do_picture_description = True
-    opts.picture_description_options = PictureDescriptionApiOptions(
-        url=f"{base}/chat/completions",
-        headers={"Authorization": f"Bearer {key}"},
-        params={"model": args.model, "temperature": 0.0},
-        prompt=prompt,
-        timeout=args.timeout,
-        concurrency=args.concurrency,
-        provenance=f"{args.model}@api",
-    )
+    opts.picture_description_options = vlm
 
     log.info(
-        "%s | %d trang, parse %d-%d | ocr=%s table=%s | VLM=%s qua %s",
+        "%s | %d trang, parse %d-%d | ocr=%s table=%s | VLM=%s",
         pdf.name, total, lo, hi,
-        opts.do_ocr, opts.table_structure_options.mode.value, args.model, base,
+        opts.do_ocr, opts.table_structure_options.mode.value, args.model,
     )
 
     conv = DocumentConverter(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)})
     t0 = time.perf_counter()
     res = conv.convert(str(pdf), page_range=(lo, hi))
-    dt = time.perf_counter() - t0
+    return res, time.perf_counter() - t0, total, lo, hi
 
-    doc = res.document
 
+def finish(doc, res, dt, total, lo, hi, pdf, args) -> None:
     # docling nhan `provenance` trong options nhung KHONG doc no:
     # PictureDescriptionApiModel.__init__ khong gan self.provenance, nen created_by
     # ket o "not-implemented" cua lop cha. Dong dau vao day de NT2 con truy duoc
@@ -141,7 +188,9 @@ def main() -> None:
 
     outdir = ROOT / args.outdir
     outdir.mkdir(parents=True, exist_ok=True)
-    tag = f"{pdf.stem}__{args.model}"
+    # Tên file = tên tài liệu, KHÔNG kèm tên model. Model VLM đã được đóng dấu bên trong
+    # file (meta.description.created_by = "<model>@api" trên từng ảnh) — đủ để truy.
+    tag = pdf.stem
     md = doc.export_to_markdown()
     (outdir / f"{tag}.md").write_text(md, encoding="utf-8")
     doc.save_as_json(outdir / f"{tag}.json")

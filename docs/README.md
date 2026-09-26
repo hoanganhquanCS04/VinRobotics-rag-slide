@@ -34,10 +34,15 @@
 | [embedding.md](./spec/embedding.md) | Biến chunk thành vector — model, cách gộp, cache |
 | [search.md](./spec/search.md) | Từ câu hỏi ra số trang — hybrid dense + BM25, gộp bằng RRF |
 | [pronunciation.md](./spec/pronunciation.md) | Robot đọc thuật ngữ thế nào — và S4 đếm âm tiết theo đó |
+| [scenario.md](./spec/scenario.md) | S4 — kịch bản mỗi trang: input, hai loại câu, chống bịa, validate |
 
 ## Nhánh offline
 
-Đọc [`offline/00-overview.md`](./offline/00-overview.md) trước, rồi theo **thứ tự chạy thật**
+**Muốn biết cái đang chạy thật:** đọc [`offline/01-hien-trang.md`](./offline/01-hien-trang.md) —
+luồng, lệnh, cấu trúc dữ liệu từng tầng, gọn trong một trang.
+**Cần lệnh để chạy / đọc kết quả:** [`offline/02-lenh.md`](./offline/02-lenh.md).
+
+Muốn biết thiết kế đích: đọc [`offline/00-overview.md`](./offline/00-overview.md), rồi theo **thứ tự chạy thật**
 (số stage là lớp khái niệm, không phải thứ tự thực thi):
 
 | Trạng thái | File | Một câu |
